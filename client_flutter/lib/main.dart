@@ -428,7 +428,7 @@ class _BankHomePageState extends State<BankHomePage> {
                 label: '风险演示',
                 icon: Icons.shield_rounded,
                 accent: true,
-                onTap: () => unawaited(_openTransferSheet(payeePreset: '李四', amountPreset: '8000', cityPreset: '北京')),
+                onTap: () => unawaited(_openTransferSheet(payeePreset: '小c', amountPreset: '8000', cityPreset: '北京')),
               ),
               _QuickButton(
                 label: '账单',

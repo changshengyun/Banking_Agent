@@ -8,7 +8,7 @@ from ..db import get_connection
 
 
 class BankingRepository:
-    def __init__(self, user_id: str = "user-demo") -> None:
+    def __init__(self, user_id: str = "小a") -> None:
         self.user_id = user_id
 
     def _now(self) -> str:

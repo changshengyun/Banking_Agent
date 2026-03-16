@@ -54,7 +54,7 @@ class _FakeApiClient implements BankingApiClient {
       totalAssets: 20000,
       latestTransaction: TransactionRecord(
         id: 'txn-demo',
-        title: '转账给 张三',
+        title: '转账给 小b',
         subtitle: 'AI Agent 风控确认后执行',
         amount: 500,
         isIncome: false,

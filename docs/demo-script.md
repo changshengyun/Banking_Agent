@@ -34,7 +34,7 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
 1. Open the home page and show dashboard data from the backend.
 2. Click `风险演示 (Risk Demo)`.
-3. Keep preset values: payee `李四`, amount `8000`, city `北京`.
+3. Keep preset values: payee `小c`, amount `8000`, city `北京`.
 4. Submit precheck and explain that the backend host aggregates context and applies rules.
 5. Show the risk dialog and explain why the agent requests confirmation.
 6. Confirm the transfer and show the updated account balance.

@@ -22,7 +22,7 @@ def test_transfer_review_flow() -> None:
         precheck = client.post(
             "/api/v1/transfers/precheck",
             json={
-                "payee_name": "李四",
+                "payee_name": "小c",
                 "amount": 8000,
                 "context": {
                     "session_id": "session-test",

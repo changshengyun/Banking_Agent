@@ -1,0 +1,768 @@
+; Prompt:
+; 我现在有一个刚建立的 Flutter 默认项目。请帮我修改 lib/main.dart，实现一个银行 App 首页原型：
+
+; 顶部卡片：显示“储蓄账户余额：￥12,500.00”。
+
+; 核心操作区：转账、理财、账单查询三个图标按钮。
+
+; 悬浮 AI 按钮：右下角一个圆形的“AI 助手”按钮。
+
+; 交互逻辑：点击“AI 助手”弹出一个半屏的聊天窗口（Chat UI）。
+; 上述代码是豆包生成的，请修改代码，重点参考汇丰手机银行app
+
+
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    const primaryRed = Color(0xFFDB0011);
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'HSBC-like Bank Prototype',
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: primaryRed,
+          primary: primaryRed,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: const Color(0xFFF4F5F7),
+      ),
+      home: const BankHomePage(),
+    );
+  }
+}
+
+class BankHomePage extends StatefulWidget {
+  const BankHomePage({super.key});
+
+  @override
+  State<BankHomePage> createState() => _BankHomePageState();
+}
+
+class _BankHomePageState extends State<BankHomePage> {
+  final List<_ChatMessage> _messages = <_ChatMessage>[
+    _ChatMessage(
+      text: 'Hi, I am your AI assistant. Ask me anything about your account.',
+      isUser: false,
+    ),
+  ];
+  final TextEditingController _chatController = TextEditingController();
+  final _DeepSeekService _deepSeekService = const _DeepSeekService();
+
+  int _currentTab = 0;
+  bool _isSending = false;
+
+  final List<_QuickAction> _quickActions = const <_QuickAction>[
+    _QuickAction(label: 'Transfer', icon: Icons.swap_horiz_rounded),
+    _QuickAction(label: 'Savings', icon: Icons.savings_rounded),
+    _QuickAction(label: 'Statement', icon: Icons.receipt_long_rounded),
+  ];
+
+  final List<_NavItem> _navItems = const <_NavItem>[
+    _NavItem(label: 'Home', icon: Icons.home_rounded),
+    _NavItem(label: 'Pay', icon: Icons.qr_code_2_rounded),
+    _NavItem(label: 'Invest', icon: Icons.trending_up_rounded),
+    _NavItem(label: 'Profile', icon: Icons.person_rounded),
+  ];
+
+  void _openAiAssistant() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (BuildContext context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.58,
+          minChildSize: 0.42,
+          maxChildSize: 0.92,
+          expand: false,
+          builder: (BuildContext context, ScrollController scrollController) {
+            return _AiChatSheet(
+              scrollController: scrollController,
+              messages: _messages,
+              controller: _chatController,
+              isSending: _isSending,
+              onSend: _handleSendMessage,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _handleSendMessage(String text) async {
+    final String content = text.trim();
+    if (content.isEmpty || _isSending) return;
+
+    setState(() {
+      _isSending = true;
+      _messages.add(_ChatMessage(text: content, isUser: true));
+    });
+    _chatController.clear();
+
+    try {
+      final String reply = await _deepSeekService.chat(messages: _messages);
+      if (!mounted) return;
+      setState(() {
+        _messages.add(_ChatMessage(text: reply, isUser: false));
+      });
+    } on _DeepSeekException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(
+          _ChatMessage(text: 'Request failed: ${e.message}', isUser: false),
+        );
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(
+          _ChatMessage(
+            text: 'Request failed: unexpected error.',
+            isUser: false,
+          ),
+        );
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _chatController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final bool showFab = _currentTab == 0;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Bank app demo'),
+        centerTitle: false,
+        backgroundColor: scheme.surface,
+        foregroundColor: Colors.black87,
+        elevation: 0,
+      ),
+      body: SafeArea(
+        child: IndexedStack(
+          index: _currentTab,
+          children: <Widget>[
+            _HomeTab(
+              quickActions: _quickActions,
+              onQuickActionTap: (String label) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('Selected: $label')));
+              },
+            ),
+            const _PlaceholderTab(
+              title: 'Pay',
+              hint: 'QR scan, payment code and collection features prototype',
+            ),
+            const _PlaceholderTab(
+              title: 'Invest',
+              hint: 'Fund, deposit and insurance service prototype',
+            ),
+            const _PlaceholderTab(
+              title: 'Profile',
+              hint: 'Account, settings and notification center prototype',
+            ),
+          ],
+        ),
+      ),
+      floatingActionButton: showFab
+          ? FloatingActionButton(
+              onPressed: _openAiAssistant,
+              backgroundColor: const Color(0xFFDB0011),
+              foregroundColor: Colors.white,
+              child: const Text(
+                'AI',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentTab,
+        onDestinationSelected: (int index) {
+          setState(() {
+            _currentTab = index;
+          });
+        },
+        destinations: _navItems
+            .map(
+              (_NavItem item) => NavigationDestination(
+                icon: Icon(item.icon),
+                label: item.label,
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+}
+
+class _HomeTab extends StatelessWidget {
+  const _HomeTab({required this.quickActions, required this.onQuickActionTap});
+
+  final List<_QuickAction> quickActions;
+  final void Function(String label) onQuickActionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),
+      children: <Widget>[
+        _BalanceCard(textTheme: textTheme),
+        const SizedBox(height: 18),
+        Text(
+          'Core actions',
+          style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: quickActions
+              .map(
+                (_QuickAction action) => Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: _QuickActionButton(
+                      action: action,
+                      onTap: () => onQuickActionTap(action.label),
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 20),
+        _InfoCard(
+          title: 'Monthly expense overview',
+          value: 'CNY 8,420.00',
+          subtitle: 'Food 1,960 | Travel 1,220 | Shopping 2,150',
+          accent: scheme.primary,
+        ),
+        const SizedBox(height: 12),
+        _InfoCard(
+          title: 'Notifications',
+          value: '2 pending alerts',
+          subtitle: 'Credit card statement due in 3 days',
+          accent: const Color(0xFF2E6F40),
+        ),
+      ],
+    );
+  }
+}
+
+class _BalanceCard extends StatelessWidget {
+  const _BalanceCard({required this.textTheme});
+
+  final TextTheme textTheme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[Color(0xFFDB0011), Color(0xFFB8000D)],
+        ),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x33000000),
+            blurRadius: 18,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Checking account balance',
+            style: textTheme.bodyLarge?.copyWith(
+              color: Colors.white.withValues(alpha: 0.90),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'CNY 2,500.00',
+            style: textTheme.headlineMedium?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Available balance CNY 2,500.00',
+            style: textTheme.bodySmall?.copyWith(
+              color: Colors.white.withValues(alpha: 0.85),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickActionButton extends StatelessWidget {
+  const _QuickActionButton({required this.action, required this.onTap});
+
+  final _QuickAction action;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const Color accent = Color(0xFFDB0011);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Container(
+                width: 42,
+                height: 42,
+                decoration: const BoxDecoration(
+                  color: Color(0x11DB0011),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(action.icon, color: accent, size: 22),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                action.label,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCard extends StatelessWidget {
+  const _InfoCard({
+    required this.title,
+    required this.value,
+    required this.subtitle,
+    required this.accent,
+  });
+
+  final String title;
+  final String value;
+  final String subtitle;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: accent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              value,
+              style: textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: textTheme.bodySmall?.copyWith(color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaceholderTab extends StatelessWidget {
+  const _PlaceholderTab({required this.title, required this.hint});
+
+  final String title;
+  final String hint;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            const Icon(
+              Icons.account_balance_wallet_rounded,
+              size: 56,
+              color: Color(0xFFDB0011),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AiChatSheet extends StatelessWidget {
+  const _AiChatSheet({
+    required this.scrollController,
+    required this.messages,
+    required this.controller,
+    required this.isSending,
+    required this.onSend,
+  });
+
+  final ScrollController scrollController;
+  final List<_ChatMessage> messages;
+  final TextEditingController controller;
+  final bool isSending;
+  final Future<void> Function(String) onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    const Color accent = Color(0xFFDB0011);
+
+    return Material(
+      color: const Color(0xFFF8F8F8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        child: Column(
+          children: <Widget>[
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.black26,
+                borderRadius: BorderRadius.circular(100),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: <Widget>[
+                Text(
+                  'AI Assistant',
+                  style: textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                itemCount: messages.length + (isSending ? 1 : 0),
+                itemBuilder: (BuildContext context, int index) {
+                  if (isSending && index == messages.length) {
+                    return const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: 8),
+                            Text('Thinking...'),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+                  final _ChatMessage message = messages[index];
+                  return Align(
+                    alignment: message.isUser
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(vertical: 5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 13,
+                        vertical: 10,
+                      ),
+                      constraints: const BoxConstraints(maxWidth: 290),
+                      decoration: BoxDecoration(
+                        color: message.isUser
+                            ? const Color(0x1FDB0011)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: message.isUser
+                              ? const Color(0x66DB0011)
+                              : const Color(0xFFE8E8E8),
+                        ),
+                      ),
+                      child: Text(
+                        message.text,
+                        style: textTheme.bodyMedium?.copyWith(
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    textInputAction: TextInputAction.send,
+                    enabled: !isSending,
+                    onSubmitted: (String value) {
+                      unawaited(onSend(value));
+                    },
+                    decoration: InputDecoration(
+                      hintText: isSending
+                          ? 'Waiting for response...'
+                          : 'Type your message...',
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FloatingActionButton.small(
+                  onPressed: isSending
+                      ? null
+                      : () {
+                          unawaited(onSend(controller.text));
+                        },
+                  backgroundColor: accent,
+                  foregroundColor: Colors.white,
+                  child: const Icon(Icons.send_rounded),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DeepSeekService {
+  const _DeepSeekService();
+
+  /// DeepSeek API base URL.
+  ///
+  /// You can override this at build time using `--dart-define=DEEPSEEK_BASE_URL=...`.
+  static const String _baseUrl = String.fromEnvironment(
+    'DEEPSEEK_BASE_URL',
+    defaultValue: 'https://api.deepseek.ai/v3.2',
+  );
+
+  /// DeepSeek API key.
+  ///
+  /// You can set it using `--dart-define=DEEPSEEK_API_KEY=your_key`.
+  static const String _apiKey = String.fromEnvironment(
+    'DEEPSEEK_API_KEY',
+    defaultValue: '10685972-557d-482c-b4e3-38dca3a1ce22',
+  );
+
+  /// DeepSeek model to use.
+  ///
+  /// You can override it at build time using `--dart-define=DEEPSEEK_MODEL=...`.
+  static const String _model = String.fromEnvironment(
+    'DEEPSEEK_MODEL',
+    defaultValue: 'DeepSeek-V3.2',
+  );
+
+  Future<String> chat({required List<_ChatMessage> messages}) async {
+    if (_apiKey.isEmpty) {
+      throw const _DeepSeekException(
+        'Missing API key. Set --dart-define=DEEPSEEK_API_KEY=your_key.',
+      );
+    }
+
+    final Uri uri = Uri.parse('$_baseUrl/chat/completions');
+    final List<Map<String, String>> requestMessages = <Map<String, String>>[
+      const <String, String>{
+        'role': 'system',
+        'content':
+            'You are a bank app assistant. Keep answers concise, safe, and practical.',
+      },
+      ...messages
+          .skip((messages.length - 12).clamp(0, messages.length))
+          .map(
+            (message) => <String, String>{
+              'role': message.isUser ? 'user' : 'assistant',
+              'content': message.text,
+            },
+          ),
+    ];
+
+    final http.Response response = await http
+        .post(
+          uri,
+          headers: <String, String>{
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $_apiKey',
+          },
+          body: jsonEncode(<String, dynamic>{
+            'model': _model,
+            'messages': requestMessages,
+            'temperature': 0.7,
+          }),
+        )
+        .timeout(const Duration(seconds: 30));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _DeepSeekException(
+        'HTTP ${response.statusCode} ${_extractErrorMessage(response.body)}',
+      );
+    }
+
+    final dynamic decoded = jsonDecode(response.body);
+    final dynamic content = decoded['choices']?[0]?['message']?['content'];
+    if (content is String && content.trim().isNotEmpty) {
+      return content.trim();
+    }
+    throw const _DeepSeekException('No valid reply returned from model.');
+  }
+
+  String _extractErrorMessage(String body) {
+    try {
+      final dynamic decoded = jsonDecode(body);
+      final dynamic error = decoded['error'];
+      if (error is Map<String, dynamic>) {
+        final dynamic message = error['message'];
+        if (message is String && message.trim().isNotEmpty) {
+          return message.trim();
+        }
+      }
+    } catch (_) {
+      // Ignore parse error and return short preview of body instead.
+    }
+    return body.length > 120 ? '${body.substring(0, 120)}...' : body;
+  }
+}
+
+class _DeepSeekException implements Exception {
+  const _DeepSeekException(this.message);
+
+  final String message;
+}
+
+class _QuickAction {
+  const _QuickAction({required this.label, required this.icon});
+
+  final String label;
+  final IconData icon;
+}
+
+class _NavItem {
+  const _NavItem({required this.label, required this.icon});
+
+  final String label;
+  final IconData icon;
+}
+
+class _ChatMessage {
+  _ChatMessage({required this.text, required this.isUser});
+
+  final String text;
+  final bool isUser;
+}

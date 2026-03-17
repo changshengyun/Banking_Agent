@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+
+os.environ.setdefault("MOCK_LLM", "true")
+
+
 def test_dashboard_endpoint() -> None:
     from fastapi.testclient import TestClient
 

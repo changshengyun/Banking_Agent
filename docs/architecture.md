@@ -44,7 +44,7 @@ This project is a demo-first banking mobile prototype. It focuses on two ideas:
 
 ## Demo Stability
 
-- The default mode is `MOCK_LLM=true`.
+- The default mode is `MOCK_LLM=false` (online model mode).
 - Risk decisions come from deterministic rules, not a remote model.
-- The chat endpoint can still switch to a real compatible model if `LLM_API_KEY` and `LLM_MODEL` are set.
-
+- The chat endpoint uses Ark (Doubao) OpenAI-compatible parameters by default (`LLM_BASE_URL` + `LLM_MODEL`).
+- You can still switch back to local mock responses by setting `MOCK_LLM=true`.

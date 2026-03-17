@@ -646,12 +646,12 @@ class _AiChatSheet extends StatelessWidget {
 class _DeepSeekService {
   const _DeepSeekService();
 
-  /// DeepSeek API base URL.
+  /// Ark OpenAI-compatible API base URL.
   ///
   /// You can override this at build time using `--dart-define=DEEPSEEK_BASE_URL=...`.
   static const String _baseUrl = String.fromEnvironment(
     'DEEPSEEK_BASE_URL',
-    defaultValue: 'https://api.deepseek.ai/v3.2',
+    defaultValue: 'https://ark.cn-beijing.volces.com/api/v3',
   );
 
   /// DeepSeek API key.
@@ -659,15 +659,15 @@ class _DeepSeekService {
   /// You can set it using `--dart-define=DEEPSEEK_API_KEY=your_key`.
   static const String _apiKey = String.fromEnvironment(
     'DEEPSEEK_API_KEY',
-    defaultValue: '10685972-557d-482c-b4e3-38dca3a1ce22',
+    defaultValue: '',
   );
 
-  /// DeepSeek model to use.
+  /// Model to use.
   ///
   /// You can override it at build time using `--dart-define=DEEPSEEK_MODEL=...`.
   static const String _model = String.fromEnvironment(
     'DEEPSEEK_MODEL',
-    defaultValue: 'DeepSeek-V3.2',
+    defaultValue: 'deepseek-v3-2-251201',
   );
 
   Future<String> chat({required List<_ChatMessage> messages}) async {

@@ -47,4 +47,4 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
 - This is a demo system, not a production banking app.
 - Model keys should only be configured on the backend.
-- If no model key is configured, the system still works in `MOCK_LLM` mode.
+- If online model credentials are unavailable, set `MOCK_LLM=true` to switch to local mock mode.

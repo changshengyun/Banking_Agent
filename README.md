@@ -88,11 +88,12 @@ MCP 挂载路径：
 
 - `APP_ENV`：运行环境
 - `SQLITE_PATH`：SQLite 文件路径
-- `MOCK_LLM`：默认 `true`，演示时建议保持开启
-- `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`：接入真实模型时使用
+- `MOCK_LLM`：默认 `false`（在线模型模式），如需离线演示可手动设为 `true`
+- `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`：默认按豆包（火山方舟）OpenAI 兼容参数读取
+- `ARK_API_KEY` / `ARK_BASE_URL` / `ARK_MODEL` / `ARK_API_NAME`：`LLM_*` 的别名
 - `MCP_BANK_ENABLED` / `MCP_OUTDOOR_ENABLED`：是否挂载 MCP 路由
 
-说明：本项目默认可在 `MOCK_LLM=true` 下完整演示，不依赖外部模型 Key。
+说明：后端会自动读取根目录 `.env`（以及 `server/.env`），模型 Key 仅保留在后端配置中。
 
 ## 7. 测试与质量检查
 
@@ -129,3 +130,4 @@ flutter analyze --no-version-check
 
 - 架构说明：`docs/architecture.md`
 - 演示脚本：`docs/demo-script.md`
+- 时序图：`docs/sequence-diagram.md`

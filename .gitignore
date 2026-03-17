@@ -11,6 +11,9 @@ venv/
 server/.venv/
 server/data/*.db
 server/data/*.sqlite3
+.env
+.env.*
+!.env.example
 client_flutter/.dart_tool/
 client_flutter/build/
 client_flutter/.flutter-plugins-dependencies

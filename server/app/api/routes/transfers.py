@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from ...schemas.risk import RiskClassificationPayload
 from ...schemas.transfer import (
     TransferConfirmRequest,
     TransferConfirmResponse,
@@ -14,6 +15,13 @@ from ...services.bank_host import get_bank_host_service
 
 
 router = APIRouter(tags=["transfers"])
+
+
+@router.post("/transfers/classify-risk", response_model=RiskClassificationPayload)
+def classify_transfer_risk(
+    payload: TransferPrecheckRequest,
+) -> RiskClassificationPayload:
+    return get_bank_host_service().classify_transfer_risk(payload)
 
 
 @router.post("/transfers/precheck", response_model=TransferPrecheckResponse)

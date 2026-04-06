@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS risk_profiles (
     blacklist_hit INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS risk_scene_knowledge (
+    scenario_id TEXT PRIMARY KEY,
+    risk_category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    keywords_json TEXT NOT NULL,
+    high_risk_phrases_json TEXT NOT NULL,
+    suspicious_behaviors_json TEXT NOT NULL,
+    follow_up_questions_json TEXT NOT NULL,
+    suggested_reply_examples_json TEXT NOT NULL,
+    embedding_text TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS risk_events (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),

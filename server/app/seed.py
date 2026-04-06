@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .db import get_connection
+from .services.risk_knowledge_base import get_risk_knowledge_base_service
 
 
 def seed_demo_data() -> None:
@@ -66,6 +67,21 @@ def seed_demo_data() -> None:
                 "CNY",
                 "2026-03-16T09:00:00",
             ),
+        )
+        connection.execute(
+            """
+            INSERT INTO risk_profiles
+            (user_id, flag_s, scenario, relation_level_b, common_device, blacklist_hit, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                flag_s = excluded.flag_s,
+                scenario = excluded.scenario,
+                relation_level_b = excluded.relation_level_b,
+                common_device = excluded.common_device,
+                blacklist_hit = excluded.blacklist_hit,
+                updated_at = excluded.updated_at
+            """,
+            ("小a", 0.18, "normal_activity", 0.86, 1, 0, "2026-03-18T09:00:00"),
         )
         location_rows = (
             ("小a", "上海", 31.2304, 121.4737, 0.98, "2026-03-15T19:00:00", 1),
@@ -189,3 +205,5 @@ def seed_demo_data() -> None:
                 """,
                 row,
             )
+
+    get_risk_knowledge_base_service().ensure_seeded()

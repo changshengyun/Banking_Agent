@@ -25,6 +25,17 @@ void main() {
     expect(find.text('AI 助手'), findsWidgets);
     expect(find.byType(TextField), findsOneWidget);
   });
+
+  testWidgets('opens bill sheet', (WidgetTester tester) async {
+    await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('账单'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('账单明细'), findsOneWidget);
+    expect(find.text('工资入账'), findsOneWidget);
+  });
 }
 
 class _FakeApiClient implements BankingApiClient {
@@ -45,7 +56,9 @@ class _FakeApiClient implements BankingApiClient {
   }
 
   @override
-  Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
+  Future<TransferConfirmResult> confirmTransfer(
+    String confirmationToken,
+  ) async {
     return TransferConfirmResult(
       success: true,
       assistantMessage: '转账已完成',
@@ -69,7 +82,7 @@ class _FakeApiClient implements BankingApiClient {
   @override
   Future<DashboardData> fetchDashboard() async {
     return DashboardData(
-      userName: '谢小璞',
+      userName: '小1',
       cashBalance: 2500,
       wealthBalance: 18000,
       totalAssets: 20500,
@@ -128,6 +141,16 @@ class _FakeApiClient implements BankingApiClient {
       reasons: <String>['当前操作地点异常', '金额较大'],
       confirmationToken: 'confirm-demo',
       assistantMessage: '本次转账需要二次确认。',
+      riskClassification: RiskClassificationData(
+        riskCategory: '异地大额异常转账',
+        riskLevel: 'medium',
+        blockHint: false,
+        matchedKeywords: <String>['异地', '大额'],
+        matchedScenarios: <String>['异地大额异常转账'],
+        analysis: '命中异地大额风险场景。',
+        followUpQuestions: <String>['请说明你与收款人的关系。', '请说明本次转账用途。'],
+        suggestedReplyExamples: <String>['收款人是小b，这次转账用于归还借款。'],
+      ),
     );
   }
 
@@ -142,6 +165,16 @@ class _FakeApiClient implements BankingApiClient {
       reasons: <String>['用户说明合理'],
       finalRiskAfterSecondary: 0.36,
       assistantMessage: '二次校验通过，可继续确认转账。',
+      riskClassification: RiskClassificationData(
+        riskCategory: '正常转账',
+        riskLevel: 'low',
+        blockHint: false,
+        matchedKeywords: <String>[],
+        matchedScenarios: <String>['正常转账'],
+        analysis: '当前未命中高风险场景。',
+        followUpQuestions: <String>['请说明你与收款人的关系。'],
+        suggestedReplyExamples: <String>['收款人是小b，这次转账用于还款。'],
+      ),
     );
   }
 }

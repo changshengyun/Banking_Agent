@@ -57,7 +57,7 @@ class _BankHomePageState extends State<BankHomePage> {
   static const Map<String, Offset> _cityCoordinates = <String, Offset>{
     '上海': Offset(121.4737, 31.2304),
     '北京': Offset(116.4074, 39.9042),
-    '深圳': Offset(114.0579, 22.5431),
+    '西安': Offset(108.9398, 34.3416),
     '苏州': Offset(120.5853, 31.2989),
   };
 
@@ -147,6 +147,90 @@ class _BankHomePageState extends State<BankHomePage> {
 
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openBillSheet() async {
+    try {
+      final TransactionsData transactions =
+          await widget.apiClient.fetchTransactions(limit: 20);
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (BuildContext context) => SizedBox(
+          height: MediaQuery.of(context).size.height * 0.76,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              children: <Widget>[
+                const _SheetHandle(),
+                const SizedBox(height: 10),
+                Row(
+                  children: <Widget>[
+                    const Text(
+                      '账单明细',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                if (transactions.spendingSummary.isNotEmpty) ...<Widget>[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: transactions.spendingSummary
+                          .map(
+                            (SpendingSummaryItem item) => Chip(
+                              label: Text(
+                                '${item.category} ¥${item.totalAmount.toStringAsFixed(0)}',
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: transactions.items.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (BuildContext context, int index) {
+                      final TransactionRecord record = transactions.items[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(record.title),
+                        subtitle: Text('${record.subtitle} · ${record.city}'),
+                        trailing: Text(
+                          '${record.isIncome ? '+' : '-'}¥${record.amount.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            color: record.isIncome
+                                ? const Color(0xFF1E7A3F)
+                                : Colors.black87,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } on ApiException catch (error) {
+      _showSnack(error.message);
+    } catch (_) {
+      _showSnack('账单加载失败，请稍后重试');
+    }
   }
 
   Future<void> _openTransferSheet({
@@ -366,27 +450,88 @@ class _BankHomePageState extends State<BankHomePage> {
 
   Future<String?> _showSecondaryReplyDialog(TransferPrecheckResult result) async {
     final TextEditingController controller = TextEditingController();
+    final RiskClassificationData classification = result.riskClassification;
+    final List<String> followUpQuestions =
+        classification.followUpQuestions.isNotEmpty
+        ? classification.followUpQuestions
+        : const <String>[
+            '请说明你与收款人的关系。',
+            '请说明本次转账用途。',
+            '请说明是否涉及验证码、安全账户或屏幕共享。',
+          ];
+    final List<String> replyExamples =
+        classification.suggestedReplyExamples.isNotEmpty
+        ? classification.suggestedReplyExamples
+        : const <String>[
+            '收款人是小b，是我线下认识的朋友，这次转账用于归还借款，不涉及验证码或安全账户。',
+          ];
     final String? reply = await showDialog<String>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: Text('二次质询 · ${_riskLevelLabel(result.riskLevel)}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(result.assistantMessage),
-            const SizedBox(height: 12),
-            ...result.reasons.map((String reason) => Text('• $reason')),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: '请说明与收款人关系和转账用途',
-                border: OutlineInputBorder(),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                classification.analysis.isNotEmpty
+                    ? classification.analysis
+                    : result.assistantMessage,
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8E8EA),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '请说明以下内容',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ...followUpQuestions.map(
+                      (String question) => Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text('• $question'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '回答样例',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...replyExamples.take(2).map(
+                (String example) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text('示例：$example'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: '请输入说明',
+                  hintText: '关系 + 用途 + 是否涉及验证码/安全账户/屏幕共享',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: <Widget>[
           TextButton(
@@ -588,30 +733,10 @@ class _BankHomePageState extends State<BankHomePage> {
               _QuickButton(
                 label: '账单',
                 icon: Icons.receipt_long_rounded,
-                onTap: () => _showSnack('最近交易已展示在首页，下滑即可查看'),
+                onTap: () => unawaited(_openBillSheet()),
               ),
               _QuickButton(label: 'AI 助手', icon: Icons.auto_awesome_rounded, accent: true, onTap: _openAiSheet),
             ],
-          ),
-          const SizedBox(height: 16),
-          const Text('最近交易', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: dashboard.recentTransactions
-                  .map((TransactionRecord record) => ListTile(
-                        title: Text(record.title),
-                        subtitle: Text('${record.subtitle} · ${record.city}'),
-                        trailing: Text(
-                          '${record.isIncome ? '+' : '-'}¥${record.amount.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            color: record.isIncome ? const Color(0xFF1E7A3F) : Colors.black87,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ))
-                  .toList(),
-            ),
           ),
         ],
       ),

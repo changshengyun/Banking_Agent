@@ -13,6 +13,7 @@ from ..schemas.transfer import (
     TransferSecondaryCheckRequest,
     TransferSecondaryCheckResponse,
 )
+from .risk_knowledge_base import get_risk_knowledge_base_service
 from .risk_engine import RiskAssessment, RiskEngine, RiskInput
 
 
@@ -20,6 +21,7 @@ class BankHostService:
     def __init__(self, repository: BankingRepository | None = None) -> None:
         self.repository = repository or BankingRepository()
         self.risk_engine = RiskEngine()
+        self.risk_knowledge = get_risk_knowledge_base_service()
 
     def get_dashboard(self) -> DashboardResponse:
         account = self.repository.get_account()
@@ -68,6 +70,18 @@ class BankHostService:
             item["city"] for item in common_locations if int(item["is_common"]) == 1
         ]
         payee = self.repository.find_payee(request.payee_name)
+        risk_classification = self.risk_knowledge.classify_text(
+            text=self._build_classification_text(
+                payee_name=request.payee_name,
+                semantic_summary=request.context.semantic_summary,
+                recent_page=request.context.recent_page,
+                last_action=request.context.last_action,
+            ),
+            amount=request.amount,
+            current_city=request.context.current_city,
+            common_cities=common_cities,
+            is_known_payee=payee is not None,
+        )
         assessment = self.risk_engine.assess(
             RiskInput(
                 payee_name=request.payee_name,
@@ -79,6 +93,11 @@ class BankHostService:
                 recent_page=request.context.recent_page,
                 last_action=request.context.last_action,
                 semantic_summary=request.context.semantic_summary,
+                classification_risk_level=risk_classification.risk_level,
+                classification_category=risk_classification.risk_category,
+                classification_block_hint=risk_classification.block_hint,
+                classification_keywords=risk_classification.matched_keywords,
+                classification_scenarios=risk_classification.matched_scenarios,
                 input_pause_count=request.context.input_pause_count,
                 input_duration_ms=request.context.input_duration_ms,
                 extra_signals=request.context.extra_signals,
@@ -125,6 +144,7 @@ class BankHostService:
             reasons=assessment.reasons,
             confirmation_token=token,
             assistant_message=assistant_message,
+            risk_classification=risk_classification,
         )
 
     def confirm_transfer(
@@ -154,17 +174,32 @@ class BankHostService:
         if pending["decision"] == "block":
             raise ValueError("该转账已被预检拦截，无需执行二次校验。")
         if pending["decision"] == "pass":
+            risk_classification = self.risk_knowledge.classify_text(
+                text=pending["semantic_summary"],
+                amount=float(pending["amount"]),
+                current_city=pending["city"],
+                common_cities=self._common_cities(),
+                is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
+            )
             return TransferSecondaryCheckResponse(
                 secondary_decision="pass_secondary",
                 reasons=["该交易为放行路径，无需二次质询。"],
                 final_risk_after_secondary=float(pending["final_risk"]),
                 assistant_message="当前交易已处于放行状态，可直接确认转账。",
+                risk_classification=risk_classification,
             )
 
         from .agent_service import get_agent_service
 
         policy_version = "secondary_policy_v1"
         secondary_question = "请说明你与收款人的关系及本次转账的具体用途。"
+        risk_classification = self.risk_knowledge.classify_text(
+            text=f"{pending['semantic_summary']} {request.user_reply}",
+            amount=float(pending["amount"]),
+            current_city=pending["city"],
+            common_cities=self._common_cities(),
+            is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
+        )
         (
             secondary_decision,
             secondary_risk,
@@ -173,6 +208,10 @@ class BankHostService:
         ) = get_agent_service().evaluate_secondary_intercept(
             user_reply=request.user_reply,
             semantic_summary=pending["semantic_summary"],
+            risk_category=risk_classification.risk_category,
+            risk_level=risk_classification.risk_level,
+            matched_keywords=risk_classification.matched_keywords,
+            follow_up_questions=risk_classification.follow_up_questions,
         )
 
         self.repository.update_secondary_check(
@@ -206,6 +245,24 @@ class BankHostService:
             reasons=secondary_reasons,
             final_risk_after_secondary=round(secondary_risk, 4),
             assistant_message=assistant_message,
+            risk_classification=risk_classification,
+        )
+
+    def classify_transfer_risk(
+        self, request: TransferPrecheckRequest
+    ):
+        payee = self.repository.find_payee(request.payee_name)
+        return self.risk_knowledge.classify_text(
+            text=self._build_classification_text(
+                payee_name=request.payee_name,
+                semantic_summary=request.context.semantic_summary,
+                recent_page=request.context.recent_page,
+                last_action=request.context.last_action,
+            ),
+            amount=request.amount,
+            current_city=request.context.current_city,
+            common_cities=self._common_cities(),
+            is_known_payee=payee is not None,
         )
 
     def explain_last_risk_event(self) -> str:
@@ -263,6 +320,27 @@ class BankHostService:
             "low": "低风险",
         }
         return mapping.get(risk_level.lower(), "未知风险")
+
+    def _common_cities(self) -> list[str]:
+        common_locations = self.repository.get_common_locations()
+        return [item["city"] for item in common_locations if int(item["is_common"]) == 1]
+
+    def _build_classification_text(
+        self,
+        *,
+        payee_name: str,
+        semantic_summary: str,
+        recent_page: str,
+        last_action: str,
+    ) -> str:
+        return " ".join(
+            (
+                payee_name,
+                semantic_summary,
+                recent_page,
+                last_action,
+            )
+        ).strip()
 
 
 @lru_cache(maxsize=1)

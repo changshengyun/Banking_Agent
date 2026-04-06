@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from .common import ClientContext, DecisionType, TransactionItem
+from .risk import RiskClassificationPayload
 
 
 class TransferPrecheckRequest(BaseModel):
@@ -21,6 +22,7 @@ class TransferPrecheckResponse(BaseModel):
     reasons: list[str]
     confirmation_token: str
     assistant_message: str
+    risk_classification: RiskClassificationPayload
 
 
 class TransferConfirmRequest(BaseModel):
@@ -47,3 +49,4 @@ class TransferSecondaryCheckResponse(BaseModel):
     reasons: list[str]
     final_risk_after_secondary: float
     assistant_message: str
+    risk_classification: RiskClassificationPayload

@@ -326,6 +326,7 @@ class TransferPrecheckResult {
     required this.reasons,
     required this.confirmationToken,
     required this.assistantMessage,
+    required this.riskClassification,
   });
 
   factory TransferPrecheckResult.fromJson(Map<String, dynamic> json) {
@@ -337,6 +338,9 @@ class TransferPrecheckResult {
           .toList(),
       confirmationToken: json['confirmation_token'] as String? ?? '',
       assistantMessage: json['assistant_message'] as String? ?? '',
+      riskClassification: RiskClassificationData.fromJson(
+        json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
     );
   }
 
@@ -345,6 +349,7 @@ class TransferPrecheckResult {
   final List<String> reasons;
   final String confirmationToken;
   final String assistantMessage;
+  final RiskClassificationData riskClassification;
 }
 
 class TransferConfirmResult {
@@ -384,6 +389,7 @@ class TransferSecondaryCheckResult {
     required this.reasons,
     required this.finalRiskAfterSecondary,
     required this.assistantMessage,
+    required this.riskClassification,
   });
 
   factory TransferSecondaryCheckResult.fromJson(Map<String, dynamic> json) {
@@ -395,6 +401,9 @@ class TransferSecondaryCheckResult {
       finalRiskAfterSecondary:
           (json['final_risk_after_secondary'] as num?)?.toDouble() ?? 1.0,
       assistantMessage: json['assistant_message'] as String? ?? '',
+      riskClassification: RiskClassificationData.fromJson(
+        json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
     );
   }
 
@@ -402,6 +411,53 @@ class TransferSecondaryCheckResult {
   final List<String> reasons;
   final double finalRiskAfterSecondary;
   final String assistantMessage;
+  final RiskClassificationData riskClassification;
+}
+
+class RiskClassificationData {
+  const RiskClassificationData({
+    required this.riskCategory,
+    required this.riskLevel,
+    required this.blockHint,
+    required this.matchedKeywords,
+    required this.matchedScenarios,
+    required this.analysis,
+    required this.followUpQuestions,
+    required this.suggestedReplyExamples,
+  });
+
+  factory RiskClassificationData.fromJson(Map<String, dynamic> json) {
+    return RiskClassificationData(
+      riskCategory: json['risk_category'] as String? ?? '正常转账',
+      riskLevel: json['risk_level'] as String? ?? 'low',
+      blockHint: json['block_hint'] as bool? ?? false,
+      matchedKeywords: (json['matched_keywords'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+      matchedScenarios:
+          (json['matched_scenarios'] as List<dynamic>? ?? <dynamic>[])
+              .map((dynamic item) => item.toString())
+              .toList(),
+      analysis: json['analysis'] as String? ?? '',
+      followUpQuestions:
+          (json['follow_up_questions'] as List<dynamic>? ?? <dynamic>[])
+              .map((dynamic item) => item.toString())
+              .toList(),
+      suggestedReplyExamples:
+          (json['suggested_reply_examples'] as List<dynamic>? ?? <dynamic>[])
+              .map((dynamic item) => item.toString())
+              .toList(),
+    );
+  }
+
+  final String riskCategory;
+  final String riskLevel;
+  final bool blockHint;
+  final List<String> matchedKeywords;
+  final List<String> matchedScenarios;
+  final String analysis;
+  final List<String> followUpQuestions;
+  final List<String> suggestedReplyExamples;
 }
 
 class ChatTurn {

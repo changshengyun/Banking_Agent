@@ -58,7 +58,6 @@ class _BankHomePageState extends State<BankHomePage> {
     '上海': Offset(121.4737, 31.2304),
     '北京': Offset(116.4074, 39.9042),
     '西安': Offset(108.9398, 34.3416),
-    '苏州': Offset(120.5853, 31.2989),
   };
 
   DashboardData? _dashboard;

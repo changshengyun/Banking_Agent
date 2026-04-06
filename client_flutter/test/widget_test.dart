@@ -82,7 +82,7 @@ class _FakeApiClient implements BankingApiClient {
   @override
   Future<DashboardData> fetchDashboard() async {
     return DashboardData(
-      userName: '小1',
+      userName: '小a',
       cashBalance: 2500,
       wealthBalance: 18000,
       totalAssets: 20500,

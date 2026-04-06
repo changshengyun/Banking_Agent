@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from ..db import get_connection
@@ -12,7 +12,7 @@ class BankingRepository:
         self.user_id = user_id
 
     def _now(self) -> str:
-        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
     def get_user_profile(self) -> dict:
         with get_connection() as connection:
@@ -21,7 +21,7 @@ class BankingRepository:
                 (self.user_id,),
             ).fetchone()
         if row is None:
-            raise ValueError("Demo user not found. Seed data is missing.")
+            raise ValueError("未找到演示用户，请先初始化种子数据。")
         return dict(row)
 
     def get_account(self) -> dict:
@@ -34,7 +34,7 @@ class BankingRepository:
                 (self.user_id,),
             ).fetchone()
         if row is None:
-            raise ValueError("Demo account not found. Seed data is missing.")
+            raise ValueError("未找到演示账户，请先初始化种子数据。")
         return dict(row)
 
     def list_transactions(self, limit: int = 20) -> list[dict]:
@@ -91,7 +91,7 @@ class BankingRepository:
         return dict(row) if row else None
 
     def recent_outgoing_transfer_count(self, minutes: int = 20) -> int:
-        since = (datetime.now(UTC) - timedelta(minutes=minutes)).strftime(
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
             "%Y-%m-%dT%H:%M:%S"
         )
         with get_connection() as connection:
@@ -120,6 +120,10 @@ class BankingRepository:
         semantic_summary: str,
         risk_level: str,
         decision: str,
+        flag_s: float,
+        g_behavior: float,
+        g_dynamic: float,
+        final_risk: float,
         reasons: list[str],
         assistant_message: str,
     ) -> str:
@@ -130,8 +134,9 @@ class BankingRepository:
                 """
                 INSERT INTO pending_transfers
                 (id, user_id, payee_name, amount, city, device_id, recent_page, last_action,
-                 semantic_summary, risk_level, decision, reasons_json, assistant_message, created_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 semantic_summary, risk_level, decision, flag_s, g_behavior, g_dynamic, final_risk,
+                 reasons_json, assistant_message, created_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                 """,
                 (
                     pending_id,
@@ -145,6 +150,10 @@ class BankingRepository:
                     semantic_summary,
                     risk_level,
                     decision,
+                    flag_s,
+                    g_behavior,
+                    g_dynamic,
+                    final_risk,
                     json.dumps(reasons, ensure_ascii=False),
                     assistant_message,
                     created_at,
@@ -163,9 +172,13 @@ class BankingRepository:
                 (confirmation_token, self.user_id),
             ).fetchone()
         if row is None:
-            raise ValueError("Pending transfer not found or already completed.")
+            raise ValueError("未找到待确认转账，或该转账已处理完成。")
         payload = dict(row)
         payload["reasons"] = json.loads(payload.pop("reasons_json"))
+        secondary_reasons = payload.pop("secondary_reasons_json", None)
+        payload["secondary_reasons"] = (
+            json.loads(secondary_reasons) if secondary_reasons else []
+        )
         return payload
 
     def create_risk_event(
@@ -177,15 +190,25 @@ class BankingRepository:
         device_id: str,
         risk_level: str,
         decision: str,
+        flag_s: float,
+        g_behavior: float,
+        g_dynamic: float,
+        final_risk: float,
         reasons: list[str],
+        secondary_decision: str | None = None,
+        secondary_risk: float = 0.0,
+        secondary_reply: str | None = None,
+        policy_version: str | None = None,
     ) -> str:
         risk_event_id = f"risk-{uuid4().hex}"
         with get_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO risk_events
-                (id, user_id, payee_name, amount, city, device_id, risk_level, decision, reasons_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, payee_name, amount, city, device_id, risk_level, decision,
+                 flag_s, g_behavior, g_dynamic, final_risk, secondary_decision, secondary_risk,
+                 secondary_reply, policy_version, reasons_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     risk_event_id,
@@ -196,17 +219,64 @@ class BankingRepository:
                     device_id,
                     risk_level,
                     decision,
+                    flag_s,
+                    g_behavior,
+                    g_dynamic,
+                    final_risk,
+                    secondary_decision,
+                    secondary_risk,
+                    secondary_reply,
+                    policy_version,
                     json.dumps(reasons, ensure_ascii=False),
                     self._now(),
                 ),
             )
         return risk_event_id
 
+    def update_secondary_check(
+        self,
+        *,
+        confirmation_token: str,
+        secondary_decision: str,
+        secondary_risk: float,
+        secondary_reasons: list[str],
+        secondary_question: str,
+        secondary_reply: str,
+        policy_version: str,
+    ) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE pending_transfers
+                SET secondary_decision = ?,
+                    secondary_risk = ?,
+                    secondary_reasons_json = ?,
+                    secondary_question = ?,
+                    secondary_reply = ?,
+                    secondary_checked_at = ?,
+                    policy_version = ?
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                """,
+                (
+                    secondary_decision,
+                    secondary_risk,
+                    json.dumps(secondary_reasons, ensure_ascii=False),
+                    secondary_question,
+                    secondary_reply,
+                    self._now(),
+                    policy_version,
+                    confirmation_token,
+                    self.user_id,
+                ),
+            )
+
     def get_latest_risk_event(self) -> dict | None:
         with get_connection() as connection:
             row = connection.execute(
                 """
-                SELECT payee_name, amount, city, risk_level, decision, reasons_json, created_at
+                SELECT payee_name, amount, city, risk_level, decision,
+                       flag_s, g_behavior, g_dynamic, final_risk,
+                       reasons_json, created_at
                 FROM risk_events
                 WHERE user_id = ?
                 ORDER BY datetime(created_at) DESC
@@ -222,9 +292,17 @@ class BankingRepository:
 
     def commit_transfer(self, confirmation_token: str) -> dict:
         pending = self.get_pending_transfer(confirmation_token)
+        if pending["decision"] == "block":
+            raise ValueError("该转账已被风控拦截，无法继续确认。")
+        if (
+            pending["decision"] == "interrogate"
+            and pending.get("secondary_decision") != "pass_secondary"
+        ):
+            raise ValueError("该转账尚未通过二次校验，无法继续确认。")
+
         account = self.get_account()
         if pending["amount"] > account["cash_balance"]:
-            raise ValueError("Insufficient balance for demo transfer.")
+            raise ValueError("余额不足，无法完成本次转账。")
 
         created_at = self._now()
         transaction_id = f"txn-{uuid4().hex}"
@@ -249,7 +327,7 @@ class BankingRepository:
                     transaction_id,
                     self.user_id,
                     f"转账给 {pending['payee_name']}",
-                    "AI Agent 风控确认后执行",
+                    "经智能体风控确认后执行",
                     pending["amount"],
                     pending["city"],
                     pending["payee_name"],
@@ -305,3 +383,4 @@ class BankingRepository:
                     self._now(),
                 ),
             )
+

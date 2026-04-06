@@ -22,7 +22,7 @@ class MyApp extends StatelessWidget {
     const Color primaryRed = Color(0xFFDB0011);
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Banking AI Demo',
+      title: '银行 AI 智能体演示',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -67,7 +67,7 @@ class _BankHomePageState extends State<BankHomePage> {
   bool _hideAssets = false;
   int _currentTab = 0;
   String _currentCity = '上海';
-  String _deviceId = 'android-demo-001';
+  String _deviceId = '演示设备-001';
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
   @override
@@ -108,6 +108,9 @@ class _BankHomePageState extends State<BankHomePage> {
     required String page,
     required String action,
     required String summary,
+    int? inputPauseCount,
+    int? inputDurationMs,
+    Map<String, dynamic> extraSignals = const <String, dynamic>{},
   }) {
     final Offset point = _cityCoordinates[city] ?? const Offset(121.4737, 31.2304);
     return ClientContextData(
@@ -120,11 +123,27 @@ class _BankHomePageState extends State<BankHomePage> {
       recentPage: page,
       lastAction: action,
       semanticSummary: summary,
+      inputPauseCount: inputPauseCount,
+      inputDurationMs: inputDurationMs,
+      extraSignals: extraSignals,
     );
   }
 
   String _money(double value) =>
       _hideAssets ? '****' : '¥${value.toStringAsFixed(2)}';
+
+  String _riskLevelLabel(String riskLevel) {
+    switch (riskLevel.toLowerCase()) {
+      case 'high':
+        return '高风险';
+      case 'medium':
+        return '中风险';
+      case 'low':
+        return '低风险';
+      default:
+        return '风险未知';
+    }
+  }
 
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
@@ -138,6 +157,18 @@ class _BankHomePageState extends State<BankHomePage> {
     final TextEditingController payeeController = TextEditingController(text: payeePreset);
     final TextEditingController amountController = TextEditingController(text: amountPreset);
     final TextEditingController deviceController = TextEditingController(text: _deviceId);
+    final Stopwatch inputStopwatch = Stopwatch()..start();
+    int inputPauseCount = 0;
+    DateTime? lastInputAt;
+    const Duration pauseThreshold = Duration(milliseconds: 1200);
+    void recordInputTick() {
+      final DateTime now = DateTime.now();
+      if (lastInputAt != null && now.difference(lastInputAt!) > pauseThreshold) {
+        inputPauseCount += 1;
+      }
+      lastInputAt = now;
+    }
+
     String selectedCity = cityPreset;
     bool busy = false;
 
@@ -162,12 +193,14 @@ class _BankHomePageState extends State<BankHomePage> {
               const SizedBox(height: 12),
               TextField(
                 controller: payeeController,
+                onChanged: (_) => recordInputTick(),
                 decoration: const InputDecoration(labelText: '收款人', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: amountController,
                 keyboardType: TextInputType.number,
+                onChanged: (_) => recordInputTick(),
                 decoration: const InputDecoration(labelText: '金额（元）', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 12),
@@ -186,7 +219,8 @@ class _BankHomePageState extends State<BankHomePage> {
               const SizedBox(height: 12),
               TextField(
                 controller: deviceController,
-                decoration: const InputDecoration(labelText: '设备 ID', border: OutlineInputBorder()),
+                onChanged: (_) => recordInputTick(),
+                decoration: const InputDecoration(labelText: '设备标识', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 12),
               SizedBox(
@@ -198,6 +232,10 @@ class _BankHomePageState extends State<BankHomePage> {
                           final double? amount = double.tryParse(amountController.text.trim());
                           final String payee = payeeController.text.trim();
                           final String deviceId = deviceController.text.trim();
+                          if (inputStopwatch.isRunning) {
+                            recordInputTick();
+                          }
+                          final int inputDurationMs = inputStopwatch.elapsed.inMilliseconds;
                           if (amount == null || amount <= 0 || payee.isEmpty || deviceId.isEmpty) {
                             _showSnack('请完整填写转账信息');
                             return;
@@ -216,7 +254,14 @@ class _BankHomePageState extends State<BankHomePage> {
                                 city: selectedCity,
                                 page: 'home',
                                 action: 'tap_transfer_precheck',
-                                summary: '用户从首页发起转账，等待 Agent 预检。',
+                                summary: '用户从首页发起转账，等待智能体预检。',
+                                inputPauseCount: inputPauseCount,
+                                inputDurationMs: inputDurationMs,
+                                extraSignals: <String, dynamic>{
+                                  'payee_length': payee.length,
+                                  'amount_text_length': amountController.text.trim().length,
+                                  'pause_threshold_ms': pauseThreshold.inMilliseconds,
+                                },
                               ),
                             );
                             if (context.mounted) Navigator.pop(context);
@@ -240,35 +285,72 @@ class _BankHomePageState extends State<BankHomePage> {
       ),
     );
 
+    inputStopwatch.stop();
     payeeController.dispose();
     amountController.dispose();
     deviceController.dispose();
   }
 
   Future<void> _handlePrecheck(TransferPrecheckResult result) async {
-    if (result.decision == 'review') {
-      final bool confirmed = await showDialog<bool>(
-            context: context,
-            builder: (BuildContext context) => AlertDialog(
-              title: Text('风控提醒 · ${result.riskLevel.toUpperCase()}'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(result.assistantMessage),
-                  const SizedBox(height: 12),
-                  ...result.reasons.map((String reason) => Text('• $reason')),
-                ],
-              ),
-              actions: <Widget>[
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('仍要继续')),
-              ],
-            ),
-          ) ??
-          false;
-      if (!confirmed) return;
+    final String decision = result.decision;
+    if (decision == 'block') {
+      await showDialog<bool>(
+        context: context,
+        builder: (BuildContext context) => AlertDialog(
+          title: Text('转账被拦截 · ${_riskLevelLabel(result.riskLevel)}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(result.assistantMessage.isEmpty ? '该笔转账存在高风险，请联系客服确认。' : result.assistantMessage),
+              const SizedBox(height: 12),
+              ...result.reasons.map((String reason) => Text('• $reason')),
+            ],
+          ),
+          actions: <Widget>[
+            FilledButton.tonal(onPressed: () => Navigator.pop(context, true), child: const Text('知道了')),
+          ],
+        ),
+      );
+      return;
     }
+
+    bool proceed = true;
+    if (decision == 'interrogate') {
+      final String? userReply = await _showSecondaryReplyDialog(result);
+      if (userReply == null) return;
+      try {
+        final TransferSecondaryCheckResult secondary =
+            await widget.apiClient.secondaryCheckTransfer(
+          confirmationToken: result.confirmationToken,
+          userReply: userReply,
+          context: _context(
+            city: _currentCity,
+            page: 'transfer',
+            action: 'secondary_check',
+            summary: '用户在二次质询阶段提交解释。',
+            extraSignals: <String, dynamic>{
+              'reply_length': userReply.length,
+            },
+          ),
+        );
+        _showSnack(secondary.assistantMessage);
+        if (secondary.secondaryDecision == 'block_secondary') {
+          await _showSecondaryBlockedDialog(secondary);
+          proceed = false;
+        } else {
+          proceed = true;
+        }
+      } on ApiException catch (error) {
+        _showSnack(error.message);
+        proceed = false;
+      } catch (_) {
+        _showSnack('二次校验失败，请稍后重试');
+        proceed = false;
+      }
+    }
+
+    if (!proceed) return;
 
     try {
       final TransferConfirmResult confirm =
@@ -280,6 +362,79 @@ class _BankHomePageState extends State<BankHomePage> {
     } catch (_) {
       _showSnack('模拟转账执行失败');
     }
+  }
+
+  Future<String?> _showSecondaryReplyDialog(TransferPrecheckResult result) async {
+    final TextEditingController controller = TextEditingController();
+    final String? reply = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text('二次质询 · ${_riskLevelLabel(result.riskLevel)}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(result.assistantMessage),
+            const SizedBox(height: 12),
+            ...result.reasons.map((String reason) => Text('• $reason')),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: '请说明与收款人关系和转账用途',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final String text = controller.text.trim();
+              if (text.isEmpty) {
+                _showSnack('请输入说明后再提交');
+                return;
+              }
+              Navigator.pop(context, text);
+            },
+            child: const Text('提交校验'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return reply;
+  }
+
+  Future<void> _showSecondaryBlockedDialog(
+    TransferSecondaryCheckResult result,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('二次校验未通过'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(result.assistantMessage),
+            const SizedBox(height: 12),
+            ...result.reasons.map((String reason) => Text('• $reason')),
+          ],
+        ),
+        actions: <Widget>[
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _openAiSheet() {
@@ -307,7 +462,7 @@ class _BankHomePageState extends State<BankHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('银行 AI Agent 风控演示'),
+        title: const Text('银行 AI 智能体风控演示'),
         actions: <Widget>[
           IconButton(onPressed: () => unawaited(_loadDashboard()), icon: const Icon(Icons.refresh_rounded)),
         ],
@@ -316,7 +471,7 @@ class _BankHomePageState extends State<BankHomePage> {
         index: _currentTab,
         children: <Widget>[
           _buildHome(),
-          const _PlaceholderTab(title: '支付', hint: '当前重点展示转账风控与 Agent 对话能力。'),
+          const _PlaceholderTab(title: '支付', hint: '当前重点展示转账风控与智能体对话能力。'),
           const _PlaceholderTab(title: '理财', hint: '理财推荐作为扩展功能预留。'),
           const _PlaceholderTab(title: '我的', hint: '这里可扩展设备、地点与用户画像信息。'),
         ],
@@ -512,7 +667,9 @@ class _AiChatSheetState extends State<_AiChatSheet> {
           _UiChatMessage(
             text: reply.assistantMessage,
             isUser: false,
-            toolSummary: reply.usedTools.map((ToolUsageItem item) => item.name).join(', '),
+            toolSummary: reply.usedTools
+                .map((ToolUsageItem item) => item.summary.isNotEmpty ? item.summary : item.name)
+                .join('；'),
           ),
         );
       });
@@ -553,7 +710,7 @@ class _AiChatSheetState extends State<_AiChatSheet> {
                 if (_sending && index == widget.messages.length) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Text('正在调用 Agent 与工具...'),
+                    child: Text('正在调用智能体与工具...'),
                   );
                 }
                 final _UiChatMessage message = widget.messages[index];
@@ -574,7 +731,7 @@ class _AiChatSheetState extends State<_AiChatSheet> {
                         SelectableText(message.text),
                         if (message.toolSummary != null && message.toolSummary!.isNotEmpty) ...<Widget>[
                           const SizedBox(height: 8),
-                          Text('Tools: ${message.toolSummary!}', style: const TextStyle(fontSize: 12)),
+                          Text('调用工具：${message.toolSummary!}', style: const TextStyle(fontSize: 12)),
                         ],
                       ]),
                     ),

@@ -25,6 +25,11 @@ abstract class BankingApiClient {
     required ClientContextData context,
   });
   Future<TransferConfirmResult> confirmTransfer(String confirmationToken);
+  Future<TransferSecondaryCheckResult> secondaryCheckTransfer({
+    required String confirmationToken,
+    required String userReply,
+    required ClientContextData context,
+  });
   Future<ChatReply> chat({
     required List<ChatTurn> messages,
     required ClientContextData context,
@@ -86,6 +91,24 @@ class HttpBankingApiClient implements BankingApiClient {
   }
 
   @override
+  Future<TransferSecondaryCheckResult> secondaryCheckTransfer({
+    required String confirmationToken,
+    required String userReply,
+    required ClientContextData context,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$_baseUrl/api/v1/transfers/secondary-check'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+      body: jsonEncode(<String, dynamic>{
+        'confirmation_token': confirmationToken,
+        'user_reply': userReply,
+        'context': context.toJson(),
+      }),
+    );
+    return TransferSecondaryCheckResult.fromJson(_decode(response));
+  }
+
+  @override
   Future<ChatReply> chat({
     required List<ChatTurn> messages,
     required ClientContextData context,
@@ -136,7 +159,7 @@ class DashboardData {
 
   factory DashboardData.fromJson(Map<String, dynamic> json) {
     return DashboardData(
-      userName: json['user_name'] as String? ?? 'Demo User',
+      userName: json['user_name'] as String? ?? '演示用户',
       cashBalance: (json['cash_balance'] as num?)?.toDouble() ?? 0,
       wealthBalance: (json['wealth_balance'] as num?)?.toDouble() ?? 0,
       totalAssets: (json['total_assets'] as num?)?.toDouble() ?? 0,
@@ -260,6 +283,9 @@ class ClientContextData {
     required this.recentPage,
     required this.lastAction,
     required this.semanticSummary,
+    this.inputPauseCount,
+    this.inputDurationMs,
+    this.extraSignals = const <String, dynamic>{},
   });
 
   Map<String, dynamic> toJson() {
@@ -273,6 +299,9 @@ class ClientContextData {
       'recent_page': recentPage,
       'last_action': lastAction,
       'semantic_summary': semanticSummary,
+      if (inputPauseCount != null) 'input_pause_count': inputPauseCount,
+      if (inputDurationMs != null) 'input_duration_ms': inputDurationMs,
+      if (extraSignals.isNotEmpty) 'extra_signals': extraSignals,
     };
   }
 
@@ -285,6 +314,9 @@ class ClientContextData {
   final String recentPage;
   final String lastAction;
   final String semanticSummary;
+  final int? inputPauseCount;
+  final int? inputDurationMs;
+  final Map<String, dynamic> extraSignals;
 }
 
 class TransferPrecheckResult {
@@ -344,6 +376,32 @@ class TransferConfirmResult {
   final double wealthBalance;
   final double totalAssets;
   final TransactionRecord latestTransaction;
+}
+
+class TransferSecondaryCheckResult {
+  const TransferSecondaryCheckResult({
+    required this.secondaryDecision,
+    required this.reasons,
+    required this.finalRiskAfterSecondary,
+    required this.assistantMessage,
+  });
+
+  factory TransferSecondaryCheckResult.fromJson(Map<String, dynamic> json) {
+    return TransferSecondaryCheckResult(
+      secondaryDecision: json['secondary_decision'] as String? ?? 'block_secondary',
+      reasons: (json['reasons'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+      finalRiskAfterSecondary:
+          (json['final_risk_after_secondary'] as num?)?.toDouble() ?? 1.0,
+      assistantMessage: json['assistant_message'] as String? ?? '',
+    );
+  }
+
+  final String secondaryDecision;
+  final List<String> reasons;
+  final double finalRiskAfterSecondary;
+  final String assistantMessage;
 }
 
 class ChatTurn {

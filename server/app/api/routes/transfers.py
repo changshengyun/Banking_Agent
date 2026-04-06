@@ -7,6 +7,8 @@ from ...schemas.transfer import (
     TransferConfirmResponse,
     TransferPrecheckRequest,
     TransferPrecheckResponse,
+    TransferSecondaryCheckRequest,
+    TransferSecondaryCheckResponse,
 )
 from ...services.bank_host import get_bank_host_service
 
@@ -27,3 +29,9 @@ def confirm_transfer(
 ) -> TransferConfirmResponse:
     return get_bank_host_service().confirm_transfer(payload)
 
+
+@router.post("/transfers/secondary-check", response_model=TransferSecondaryCheckResponse)
+def secondary_check_transfer(
+    payload: TransferSecondaryCheckRequest,
+) -> TransferSecondaryCheckResponse:
+    return get_bank_host_service().secondary_check_transfer(payload)

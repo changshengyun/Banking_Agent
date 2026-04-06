@@ -10,6 +10,8 @@ from ..schemas.transfer import (
     TransferConfirmResponse,
     TransferPrecheckRequest,
     TransferPrecheckResponse,
+    TransferSecondaryCheckRequest,
+    TransferSecondaryCheckResponse,
 )
 from .risk_engine import RiskAssessment, RiskEngine, RiskInput
 
@@ -34,7 +36,7 @@ class BankHostService:
             currency=account["currency"],
             recent_transactions=transactions.items,
             spending_summary=spending_summary,
-            demo_tip="演示模式已开启：异地、大额、首次收款人会触发 Agent 风控确认。",
+            demo_tip="演示模式已开启：系统会重点监测异地、大额与新增收款人等风险特征。",
         )
 
     def list_transactions(self, limit: int = 20) -> TransactionsResponse:
@@ -74,6 +76,12 @@ class BankHostService:
                 is_known_payee=payee is not None,
                 common_cities=common_cities,
                 recent_transfer_count=self.repository.recent_outgoing_transfer_count(),
+                recent_page=request.context.recent_page,
+                last_action=request.context.last_action,
+                semantic_summary=request.context.semantic_summary,
+                input_pause_count=request.context.input_pause_count,
+                input_duration_ms=request.context.input_duration_ms,
+                extra_signals=request.context.extra_signals,
             )
         )
         assistant_message = self._build_transfer_message(request, assessment)
@@ -87,6 +95,10 @@ class BankHostService:
             semantic_summary=request.context.semantic_summary,
             risk_level=assessment.risk_level,
             decision=assessment.decision,
+            flag_s=assessment.flag_s,
+            g_behavior=assessment.g_behavior,
+            g_dynamic=assessment.g_dynamic,
+            final_risk=assessment.final_risk,
             reasons=assessment.reasons,
             assistant_message=assistant_message,
         )
@@ -97,11 +109,19 @@ class BankHostService:
             device_id=request.context.device_id,
             risk_level=assessment.risk_level,
             decision=assessment.decision,
+            flag_s=assessment.flag_s,
+            g_behavior=assessment.g_behavior,
+            g_dynamic=assessment.g_dynamic,
+            final_risk=assessment.final_risk,
             reasons=assessment.reasons,
         )
         return TransferPrecheckResponse(
             decision=assessment.decision,
             risk_level=assessment.risk_level,
+            flag_s=assessment.flag_s,
+            g_behavior=assessment.g_behavior,
+            g_dynamic=assessment.g_dynamic,
+            final_risk=assessment.final_risk,
             reasons=assessment.reasons,
             confirmation_token=token,
             assistant_message=assistant_message,
@@ -120,46 +140,131 @@ class BankHostService:
         )
         return TransferConfirmResponse(
             success=True,
-            assistant_message="转账已完成，模拟账户余额和交易记录已同步更新。",
+            assistant_message="转账已完成，余额与交易记录已更新。",
             cash_balance=account["cash_balance"],
             wealth_balance=account["wealth_balance"],
             total_assets=round(account["cash_balance"] + account["wealth_balance"], 2),
             latest_transaction=latest_transaction,
         )
 
+    def secondary_check_transfer(
+        self, request: TransferSecondaryCheckRequest
+    ) -> TransferSecondaryCheckResponse:
+        pending = self.repository.get_pending_transfer(request.confirmation_token)
+        if pending["decision"] == "block":
+            raise ValueError("该转账已被预检拦截，无需执行二次校验。")
+        if pending["decision"] == "pass":
+            return TransferSecondaryCheckResponse(
+                secondary_decision="pass_secondary",
+                reasons=["该交易为放行路径，无需二次质询。"],
+                final_risk_after_secondary=float(pending["final_risk"]),
+                assistant_message="当前交易已处于放行状态，可直接确认转账。",
+            )
+
+        from .agent_service import get_agent_service
+
+        policy_version = "secondary_policy_v1"
+        secondary_question = "请说明你与收款人的关系及本次转账的具体用途。"
+        (
+            secondary_decision,
+            secondary_risk,
+            secondary_reasons,
+            assistant_message,
+        ) = get_agent_service().evaluate_secondary_intercept(
+            user_reply=request.user_reply,
+            semantic_summary=pending["semantic_summary"],
+        )
+
+        self.repository.update_secondary_check(
+            confirmation_token=request.confirmation_token,
+            secondary_decision=secondary_decision,
+            secondary_risk=secondary_risk,
+            secondary_reasons=secondary_reasons,
+            secondary_question=secondary_question,
+            secondary_reply=request.user_reply,
+            policy_version=policy_version,
+        )
+        self.repository.create_risk_event(
+            payee_name=pending["payee_name"],
+            amount=pending["amount"],
+            city=pending["city"],
+            device_id=request.context.device_id,
+            risk_level="high" if secondary_decision == "block_secondary" else "medium",
+            decision=secondary_decision,
+            flag_s=float(pending["flag_s"]),
+            g_behavior=float(pending["g_behavior"]),
+            g_dynamic=float(pending["g_dynamic"]),
+            final_risk=float(pending["final_risk"]),
+            reasons=secondary_reasons,
+            secondary_decision=secondary_decision,
+            secondary_risk=secondary_risk,
+            secondary_reply=request.user_reply,
+            policy_version=policy_version,
+        )
+        return TransferSecondaryCheckResponse(
+            secondary_decision=secondary_decision,
+            reasons=secondary_reasons,
+            final_risk_after_secondary=round(secondary_risk, 4),
+            assistant_message=assistant_message,
+        )
+
     def explain_last_risk_event(self) -> str:
         event = self.repository.get_latest_risk_event()
         if event is None:
-            return "当前没有最近的风控记录，系统将继续监测地点、金额与收款人变化。"
+            return "近期暂无风控事件，系统监测正常进行中。"
         reasons = "；".join(event["reasons"])
+        risk_level = self._risk_level_label(event["risk_level"])
         return (
-            f"最近一次风控事件发生在 {event['city']}，风险等级为 {event['risk_level']}。"
-            f"系统给出的原因是：{reasons}"
+            f"最近一次风控事件发生在 {event['city']}，风险等级为{risk_level}，"
+            f"综合风险分 {event['final_risk']:.2f}。触发原因：{reasons}"
         )
 
     def build_bill_summary(self) -> str:
         summary = self.repository.get_spending_summary()
         if not summary:
-            return "最近暂无支出记录。"
-        parts = [f"{item['category']} {item['total_amount']:.2f} 元" for item in summary]
-        return "近期待支出主要集中在：" + "，".join(parts) + "。"
+            return "近期暂无消费记录。"
+        category_labels = {
+            "food": "餐饮",
+            "transport": "交通",
+            "shopping": "购物",
+            "transfer": "转账",
+            "income": "收入",
+        }
+        parts = [
+            f"{category_labels.get(item['category'], item['category'])} {item['total_amount']:.2f} 元"
+            for item in summary
+        ]
+        return "近期消费主要集中在：" + "；".join(parts) + "。"
 
     def _build_transfer_message(
         self, request: TransferPrecheckRequest, assessment: RiskAssessment
     ) -> str:
         if assessment.decision == "pass":
             return (
-                f"已完成转账预检。收款人 {request.payee_name}、金额 {request.amount:.2f} 元"
-                " 未触发高风险规则，可直接执行模拟转账。"
+                f"预检完成：收款人 {request.payee_name}，金额 {request.amount:.2f} 元。"
+                "当前未命中高风险规则，可继续转账。"
+            )
+        if assessment.decision == "interrogate":
+            reasons_text = "；".join(assessment.reasons)
+            return (
+                f"本次转账需要补充确认。识别到的风险信号：{reasons_text}。"
+                "请核实收款人身份与转账用途。"
             )
         reasons_text = "；".join(assessment.reasons)
         return (
-            f"本次转账需要二次确认。系统检测到：{reasons_text}"
-            "。如果这确实是你本人操作，可点击确认继续。"
+            f"本次转账已被拦截。识别到的风险信号：{reasons_text}。"
+            "如需继续，请联系人工客服进行核验。"
         )
+
+    def _risk_level_label(self, risk_level: str) -> str:
+        mapping = {
+            "high": "高风险",
+            "medium": "中风险",
+            "low": "低风险",
+        }
+        return mapping.get(risk_level.lower(), "未知风险")
 
 
 @lru_cache(maxsize=1)
 def get_bank_host_service() -> BankHostService:
     return BankHostService()
-

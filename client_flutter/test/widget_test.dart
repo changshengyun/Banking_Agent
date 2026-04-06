@@ -9,7 +9,7 @@ void main() {
     await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
     await tester.pumpAndSettle();
 
-    expect(find.text('银行 AI Agent 风控演示'), findsOneWidget);
+    expect(find.text('银行 AI 智能体风控演示'), findsOneWidget);
     expect(find.text('演示入口'), findsOneWidget);
     expect(find.text('风险演示'), findsOneWidget);
     expect(find.text('总资产'), findsOneWidget);
@@ -55,7 +55,7 @@ class _FakeApiClient implements BankingApiClient {
       latestTransaction: TransactionRecord(
         id: 'txn-demo',
         title: '转账给 小b',
-        subtitle: 'AI Agent 风控确认后执行',
+        subtitle: '经智能体风控确认后执行',
         amount: 500,
         isIncome: false,
         category: 'transfer',
@@ -90,7 +90,7 @@ class _FakeApiClient implements BankingApiClient {
       spendingSummary: const <SpendingSummaryItem>[
         SpendingSummaryItem(category: 'food', totalAmount: 86),
       ],
-      demoTip: '演示模式已开启：异地、大额、首次收款人会触发 Agent 风控确认。',
+      demoTip: '演示模式已开启：异地、大额、首次收款人会触发智能体风控确认。',
     );
   }
 
@@ -123,11 +123,25 @@ class _FakeApiClient implements BankingApiClient {
     required ClientContextData context,
   }) async {
     return const TransferPrecheckResult(
-      decision: 'review',
+      decision: 'interrogate',
       riskLevel: 'high',
       reasons: <String>['当前操作地点异常', '金额较大'],
       confirmationToken: 'confirm-demo',
       assistantMessage: '本次转账需要二次确认。',
+    );
+  }
+
+  @override
+  Future<TransferSecondaryCheckResult> secondaryCheckTransfer({
+    required String confirmationToken,
+    required String userReply,
+    required ClientContextData context,
+  }) async {
+    return const TransferSecondaryCheckResult(
+      secondaryDecision: 'pass_secondary',
+      reasons: <String>['用户说明合理'],
+      finalRiskAfterSecondary: 0.36,
+      assistantMessage: '二次校验通过，可继续确认转账。',
     );
   }
 }

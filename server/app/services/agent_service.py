@@ -12,6 +12,35 @@ from .outdoor_knowledge import OutdoorKnowledgeService
 
 
 class AgentService:
+    SECONDARY_BLOCK_KEYWORDS = (
+        "safe account",
+        "verification code",
+        "screen share",
+        "remote control",
+        "police",
+        "公安",
+        "验证码",
+        "安全账户",
+        "屏幕共享",
+        "远程控制",
+    )
+    SECONDARY_PASS_HINTS = (
+        "工资",
+        "房租",
+        "合同",
+        "发票",
+        "学费",
+        "还款",
+        "家人",
+        "朋友",
+        "同事",
+        "salary",
+        "rent",
+        "invoice",
+        "tuition",
+        "repay",
+    )
+
     def __init__(
         self,
         bank_host: BankHostService | None = None,
@@ -122,6 +151,53 @@ class AgentService:
                 SuggestedAction(label="查余额", action="ask_balance"),
                 SuggestedAction(label="查风控", action="ask_risk_reason"),
             ],
+        )
+
+    def evaluate_secondary_intercept(
+        self,
+        *,
+        user_reply: str,
+        semantic_summary: str,
+    ) -> tuple[str, float, list[str], str]:
+        normalized_reply = user_reply.strip()
+        if not normalized_reply:
+            return (
+                "block_secondary",
+                0.92,
+                ["用户未提供有效说明，二次校验默认从严处理。"],
+                "未收到有效说明，本次转账已被二次拦截。",
+            )
+
+        merged_text = f"{semantic_summary} {normalized_reply}".lower()
+        if any(keyword in merged_text for keyword in self.SECONDARY_BLOCK_KEYWORDS):
+            return (
+                "block_secondary",
+                0.98,
+                ["二次质询命中高风险诈骗语义线索。"],
+                "二次校验识别到高风险诈骗线索，本次转账已拦截。",
+            )
+
+        if len(normalized_reply) <= 6:
+            return (
+                "block_secondary",
+                0.81,
+                ["用户解释过短，无法完成有效真实性核验。"],
+                "解释信息不足，本次转账已被二次拦截。",
+            )
+
+        if any(keyword in merged_text for keyword in self.SECONDARY_PASS_HINTS):
+            return (
+                "pass_secondary",
+                0.36,
+                ["用户提供了可理解且低风险的转账用途说明。"],
+                "二次校验通过，可继续确认转账。",
+            )
+
+        return (
+            "block_secondary",
+            0.73,
+            ["解释未能排除风险，二次质询结论为从严拦截。"],
+            "二次校验未通过，本次转账已拦截。",
         )
 
     async def _live_chat_response(self, latest_message: str) -> ChatResponse:

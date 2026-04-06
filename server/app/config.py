@@ -38,13 +38,11 @@ def _get_first_non_empty(*names: str, default: str = "") -> str:
 class Settings:
     app_env: str
     sqlite_path: Path
-    mock_llm: bool
     llm_api_key: str
     llm_base_url: str
     llm_model: str
     llm_api_name: str
     mcp_bank_enabled: bool
-    mcp_outdoor_enabled: bool
 
 
 def load_settings() -> Settings:
@@ -61,7 +59,6 @@ def load_settings() -> Settings:
     return Settings(
         app_env=os.getenv("APP_ENV", "dev"),
         sqlite_path=sqlite_path,
-        mock_llm=_get_bool("MOCK_LLM", False),
         llm_api_key=_get_first_non_empty(
             "LLM_API_KEY",
             "ARK_API_KEY",
@@ -81,7 +78,6 @@ def load_settings() -> Settings:
         ),
         llm_api_name=_get_first_non_empty("LLM_API_NAME", "ARK_API_NAME"),
         mcp_bank_enabled=_get_bool("MCP_BANK_ENABLED", True),
-        mcp_outdoor_enabled=_get_bool("MCP_OUTDOOR_ENABLED", True),
     )
 
 

@@ -47,7 +47,7 @@ class _FakeApiClient implements BankingApiClient {
     return const ChatReply(
       assistantMessage: '当前可用余额为 2500.00 元。',
       usedTools: <ToolUsageItem>[
-        ToolUsageItem(name: 'get_account_summary', summary: 'mock'),
+        ToolUsageItem(name: 'get_account_summary', summary: '账户摘要'),
       ],
       suggestedActions: <SuggestedActionItem>[
         SuggestedActionItem(label: '发起转账', action: 'open_transfer'),

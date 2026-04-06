@@ -157,6 +157,11 @@ if bank_mcp is not None:
 
 
     @bank_mcp.tool()
+    def screen_external_intelligence(payee_name: str) -> dict:
+        return get_bank_host_service().screen_external_intelligence(payee_name).model_dump()
+
+
+    @bank_mcp.tool()
     def commit_transfer(confirmation_token: str) -> dict:
         payload = TransferConfirmRequest(confirmation_token=confirmation_token)
         return get_bank_host_service().confirm_transfer(payload).model_dump()

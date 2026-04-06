@@ -327,20 +327,54 @@ class TransferPrecheckResult {
     required this.confirmationToken,
     required this.assistantMessage,
     required this.riskClassification,
+    this.flagS = 0,
+    this.gBehavior = 0,
+    this.gDynamic = 0,
+    this.finalRisk = 0,
+    this.explainPack = const ExplainPackData.empty(),
   });
 
   factory TransferPrecheckResult.fromJson(Map<String, dynamic> json) {
+    final RiskClassificationData classification = RiskClassificationData.fromJson(
+      json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
+    );
+    final double flagS = (json['flag_s'] as num?)?.toDouble() ?? 0;
+    final double gBehavior = (json['g_behavior'] as num?)?.toDouble() ?? 0;
+    final double gDynamic = (json['g_dynamic'] as num?)?.toDouble() ?? 0;
+    final double finalRisk = (json['final_risk'] as num?)?.toDouble() ?? 0;
+    final List<String> reasons = (json['reasons'] as List<dynamic>? ?? <dynamic>[])
+        .map((dynamic item) => item.toString())
+        .toList();
+
+    final Map<String, dynamic>? explainPackJson =
+        json['explain_pack'] as Map<String, dynamic>?;
+    final ExplainPackData explainPack = explainPackJson != null
+        ? ExplainPackData.fromJson(explainPackJson)
+        : ExplainPackData.fallbackPrecheck(
+            decision: json['decision'] as String? ?? 'pass',
+            riskLevel: json['risk_level'] as String? ?? 'low',
+            reasons: reasons,
+            riskClassification: classification,
+            scoreBreakdown: RiskScoreBreakdownData(
+              flagS: flagS,
+              gBehavior: gBehavior,
+              gDynamic: gDynamic,
+              finalRisk: finalRisk,
+            ),
+          );
+
     return TransferPrecheckResult(
       decision: json['decision'] as String? ?? 'pass',
       riskLevel: json['risk_level'] as String? ?? 'low',
-      reasons: (json['reasons'] as List<dynamic>? ?? <dynamic>[])
-          .map((dynamic item) => item.toString())
-          .toList(),
+      reasons: reasons,
       confirmationToken: json['confirmation_token'] as String? ?? '',
       assistantMessage: json['assistant_message'] as String? ?? '',
-      riskClassification: RiskClassificationData.fromJson(
-        json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
-      ),
+      riskClassification: classification,
+      flagS: flagS,
+      gBehavior: gBehavior,
+      gDynamic: gDynamic,
+      finalRisk: finalRisk,
+      explainPack: explainPack,
     );
   }
 
@@ -350,6 +384,11 @@ class TransferPrecheckResult {
   final String confirmationToken;
   final String assistantMessage;
   final RiskClassificationData riskClassification;
+  final double flagS;
+  final double gBehavior;
+  final double gDynamic;
+  final double finalRisk;
+  final ExplainPackData explainPack;
 }
 
 class TransferConfirmResult {
@@ -390,20 +429,37 @@ class TransferSecondaryCheckResult {
     required this.finalRiskAfterSecondary,
     required this.assistantMessage,
     required this.riskClassification,
+    this.explainPack = const ExplainPackData.empty(),
   });
 
   factory TransferSecondaryCheckResult.fromJson(Map<String, dynamic> json) {
+    final RiskClassificationData classification = RiskClassificationData.fromJson(
+      json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
+    );
+    final List<String> reasons = (json['reasons'] as List<dynamic>? ?? <dynamic>[])
+        .map((dynamic item) => item.toString())
+        .toList();
+    final double finalRiskAfterSecondary =
+        (json['final_risk_after_secondary'] as num?)?.toDouble() ?? 1.0;
+    final Map<String, dynamic>? explainPackJson =
+        json['explain_pack'] as Map<String, dynamic>?;
+    final ExplainPackData explainPack = explainPackJson != null
+        ? ExplainPackData.fromJson(explainPackJson)
+        : ExplainPackData.fallbackSecondary(
+            secondaryDecision:
+                json['secondary_decision'] as String? ?? 'block_secondary',
+            reasons: reasons,
+            riskClassification: classification,
+            finalRiskAfterSecondary: finalRiskAfterSecondary,
+          );
+
     return TransferSecondaryCheckResult(
       secondaryDecision: json['secondary_decision'] as String? ?? 'block_secondary',
-      reasons: (json['reasons'] as List<dynamic>? ?? <dynamic>[])
-          .map((dynamic item) => item.toString())
-          .toList(),
-      finalRiskAfterSecondary:
-          (json['final_risk_after_secondary'] as num?)?.toDouble() ?? 1.0,
+      reasons: reasons,
+      finalRiskAfterSecondary: finalRiskAfterSecondary,
       assistantMessage: json['assistant_message'] as String? ?? '',
-      riskClassification: RiskClassificationData.fromJson(
-        json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
-      ),
+      riskClassification: classification,
+      explainPack: explainPack,
     );
   }
 
@@ -412,6 +468,7 @@ class TransferSecondaryCheckResult {
   final double finalRiskAfterSecondary;
   final String assistantMessage;
   final RiskClassificationData riskClassification;
+  final ExplainPackData explainPack;
 }
 
 class RiskClassificationData {
@@ -458,6 +515,195 @@ class RiskClassificationData {
   final String analysis;
   final List<String> followUpQuestions;
   final List<String> suggestedReplyExamples;
+}
+
+class ExplainPackData {
+  const ExplainPackData({
+    required this.headline,
+    required this.recommendedAction,
+    required this.scoreBreakdown,
+    required this.nodes,
+  });
+
+  const ExplainPackData.empty()
+      : headline = '',
+        recommendedAction = '',
+        scoreBreakdown = const RiskScoreBreakdownData.empty(),
+        nodes = const <ExplainNodeData>[];
+
+  factory ExplainPackData.fromJson(Map<String, dynamic> json) {
+    return ExplainPackData(
+      headline: json['headline'] as String? ?? '',
+      recommendedAction: json['recommended_action'] as String? ?? '',
+      scoreBreakdown: RiskScoreBreakdownData.fromJson(
+        json['score_breakdown'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
+      nodes: (json['nodes'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => ExplainNodeData.fromJson(item as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+
+  factory ExplainPackData.fallbackPrecheck({
+    required String decision,
+    required String riskLevel,
+    required List<String> reasons,
+    required RiskClassificationData riskClassification,
+    required RiskScoreBreakdownData scoreBreakdown,
+  }) {
+    final String headline = switch (decision) {
+      'block' => '交易被拦截，存在高风险信号',
+      'interrogate' => '交易需要补充确认',
+      _ => '交易风险较低，可继续操作',
+    };
+    final String action = switch (decision) {
+      'block' => '暂停转账并通过官方渠道核验收款方。',
+      'interrogate' => '先完成二次质询，确认关系与用途后再继续。',
+      _ => '请继续保持正常转账习惯，避免泄露验证码。',
+    };
+    final String level = _normalizeRiskLevel(riskLevel);
+    return ExplainPackData(
+      headline: headline,
+      recommendedAction: action,
+      scoreBreakdown: scoreBreakdown,
+      nodes: <ExplainNodeData>[
+        ExplainNodeData(
+          id: 'knowledge',
+          title: '知识库分类',
+          level: level,
+          summary: riskClassification.riskCategory,
+          detail: riskClassification.analysis,
+          score: scoreBreakdown.gDynamic,
+        ),
+        ExplainNodeData(
+          id: 'risk-reasons',
+          title: '触发信号',
+          level: level,
+          summary: reasons.isNotEmpty ? reasons.first : '未命中明显风险信号',
+          detail: reasons.skip(1).take(2).join('；'),
+          score: scoreBreakdown.finalRisk,
+        ),
+        ExplainNodeData(
+          id: 'decision',
+          title: '决策结论',
+          level: level,
+          summary: headline,
+          detail: action,
+          score: scoreBreakdown.finalRisk,
+        ),
+      ],
+    );
+  }
+
+  factory ExplainPackData.fallbackSecondary({
+    required String secondaryDecision,
+    required List<String> reasons,
+    required RiskClassificationData riskClassification,
+    required double finalRiskAfterSecondary,
+  }) {
+    final bool blocked = secondaryDecision == 'block_secondary';
+    final String level = blocked ? 'high' : riskClassification.riskLevel;
+    return ExplainPackData(
+      headline: blocked ? '二次校验未通过' : '二次校验通过',
+      recommendedAction:
+          blocked ? '建议停止转账并联系银行客服进一步核验。' : '可以继续执行转账确认。',
+      scoreBreakdown: RiskScoreBreakdownData(
+        flagS: 0,
+        gBehavior: 0,
+        gDynamic: 0,
+        finalRisk: finalRiskAfterSecondary,
+      ),
+      nodes: <ExplainNodeData>[
+        ExplainNodeData(
+          id: 'secondary-classification',
+          title: '二次分类结果',
+          level: _normalizeRiskLevel(level),
+          summary: riskClassification.riskCategory,
+          detail: riskClassification.analysis,
+          score: finalRiskAfterSecondary,
+        ),
+        ExplainNodeData(
+          id: 'secondary-reason',
+          title: '二次判断依据',
+          level: _normalizeRiskLevel(level),
+          summary: reasons.isNotEmpty ? reasons.first : '模型未返回额外原因',
+          detail: reasons.skip(1).take(2).join('；'),
+          score: finalRiskAfterSecondary,
+        ),
+      ],
+    );
+  }
+
+  static String _normalizeRiskLevel(String raw) {
+    final String value = raw.trim().toLowerCase();
+    if (value == 'high' || value == 'medium' || value == 'low') {
+      return value;
+    }
+    return 'medium';
+  }
+
+  final String headline;
+  final String recommendedAction;
+  final RiskScoreBreakdownData scoreBreakdown;
+  final List<ExplainNodeData> nodes;
+}
+
+class RiskScoreBreakdownData {
+  const RiskScoreBreakdownData({
+    required this.flagS,
+    required this.gBehavior,
+    required this.gDynamic,
+    required this.finalRisk,
+  });
+
+  const RiskScoreBreakdownData.empty()
+      : flagS = 0,
+        gBehavior = 0,
+        gDynamic = 0,
+        finalRisk = 0;
+
+  factory RiskScoreBreakdownData.fromJson(Map<String, dynamic> json) {
+    return RiskScoreBreakdownData(
+      flagS: (json['flag_s'] as num?)?.toDouble() ?? 0,
+      gBehavior: (json['g_behavior'] as num?)?.toDouble() ?? 0,
+      gDynamic: (json['g_dynamic'] as num?)?.toDouble() ?? 0,
+      finalRisk: (json['final_risk'] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  final double flagS;
+  final double gBehavior;
+  final double gDynamic;
+  final double finalRisk;
+}
+
+class ExplainNodeData {
+  const ExplainNodeData({
+    required this.id,
+    required this.title,
+    required this.level,
+    required this.summary,
+    required this.detail,
+    required this.score,
+  });
+
+  factory ExplainNodeData.fromJson(Map<String, dynamic> json) {
+    return ExplainNodeData(
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? '风险节点',
+      level: json['level'] as String? ?? 'medium',
+      summary: json['summary'] as String? ?? '',
+      detail: json['detail'] as String? ?? '',
+      score: (json['score'] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  final String id;
+  final String title;
+  final String level;
+  final String summary;
+  final String detail;
+  final double score;
 }
 
 class ChatTurn {

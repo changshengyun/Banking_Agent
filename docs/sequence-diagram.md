@@ -18,12 +18,12 @@ sequenceDiagram
     Host->>DB: 查询账户、常用地点、收款人历史
     DB-->>Host: 历史数据
     Host->>Risk: assess(RiskInput)
-    Risk-->>Host: decision(pass/review), risk_level, reasons
+    Risk-->>Host: decision(pass/interrogate), risk_level, reasons
     Host->>DB: 写入 pending_transfers + risk_events
     Host-->>API: TransferPrecheckResponse
     API-->>F: decision/risk_level/reasons/token/message
 
-    alt decision = review
+    alt decision = interrogate
         F-->>U: 展示风险弹窗(原因+确认)
         U->>F: 点击确认继续
     end

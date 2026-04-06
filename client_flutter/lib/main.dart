@@ -260,7 +260,7 @@ class _BankHomePageState extends State<BankHomePage> {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (BuildContext context) => StatefulBuilder(
-        builder: (BuildContext context, StateSetter setModalState) => Padding(
+        builder: (BuildContext context, StateSetter setModalState) => SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
             16,
             16,
@@ -369,6 +369,7 @@ class _BankHomePageState extends State<BankHomePage> {
     );
 
     inputStopwatch.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 250));
     payeeController.dispose();
     amountController.dispose();
     deviceController.dispose();
@@ -386,6 +387,8 @@ class _BankHomePageState extends State<BankHomePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(result.assistantMessage.isEmpty ? '该笔转账存在高风险，请联系客服确认。' : result.assistantMessage),
+              const SizedBox(height: 12),
+              _XaiExplainPanel(explainPack: result.explainPack),
               const SizedBox(height: 12),
               ...result.reasons.map((String reason) => Text('• $reason')),
             ],
@@ -479,6 +482,8 @@ class _BankHomePageState extends State<BankHomePage> {
                     : result.assistantMessage,
               ),
               const SizedBox(height: 12),
+              _XaiExplainPanel(explainPack: result.explainPack),
+              const SizedBox(height: 12),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
@@ -567,6 +572,8 @@ class _BankHomePageState extends State<BankHomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Text(result.assistantMessage),
+            const SizedBox(height: 12),
+            _XaiExplainPanel(explainPack: result.explainPack),
             const SizedBox(height: 12),
             ...result.reasons.map((String reason) => Text('• $reason')),
           ],
@@ -956,6 +963,130 @@ class _SheetHandle extends StatelessWidget {
       width: 40,
       height: 4,
       decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(100)),
+    );
+  }
+}
+
+class _XaiExplainPanel extends StatelessWidget {
+  const _XaiExplainPanel({required this.explainPack});
+
+  final ExplainPackData explainPack;
+
+  Color _riskColor(String level) {
+    switch (level.toLowerCase()) {
+      case 'high':
+        return const Color(0xFFB3261E);
+      case 'low':
+        return const Color(0xFF1E7A3F);
+      default:
+        return const Color(0xFF8A5A00);
+    }
+  }
+
+  String _riskLabel(String level) {
+    switch (level.toLowerCase()) {
+      case 'high':
+        return '高风险';
+      case 'low':
+        return '低风险';
+      default:
+        return '中风险';
+    }
+  }
+
+  String _score(double value) => (value * 100).toStringAsFixed(0);
+
+  @override
+  Widget build(BuildContext context) {
+    final List<ExplainNodeData> nodes = explainPack.nodes;
+    final RiskScoreBreakdownData score = explainPack.scoreBreakdown;
+    if (explainPack.headline.isEmpty && nodes.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9FC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'XAI 风险解释',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            explainPack.headline,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          if (explainPack.recommendedAction.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 4),
+            Text(
+              '建议动作：${explainPack.recommendedAction}',
+              style: const TextStyle(fontSize: 12, color: Colors.black87),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              Chip(label: Text('静态 S ${_score(score.flagS)}')),
+              Chip(label: Text('行为 B ${_score(score.gBehavior)}')),
+              Chip(label: Text('语义 G ${_score(score.gDynamic)}')),
+              Chip(label: Text('综合 F ${_score(score.finalRisk)}')),
+            ],
+          ),
+          if (nodes.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 10),
+            ...nodes.map(
+              (ExplainNodeData node) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Container(
+                      margin: const EdgeInsets.only(top: 3),
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: _riskColor(node.level),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            '${node.title} · ${_riskLabel(node.level)} · ${(node.score * 100).toStringAsFixed(0)}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          if (node.summary.isNotEmpty)
+                            Text(node.summary, style: const TextStyle(fontSize: 12)),
+                          if (node.detail.isNotEmpty)
+                            Text(
+                              node.detail,
+                              style: const TextStyle(fontSize: 12, color: Colors.black54),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

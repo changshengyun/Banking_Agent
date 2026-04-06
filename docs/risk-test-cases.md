@@ -199,3 +199,49 @@ cd client_flutter
 flutter analyze --no-version-check
 flutter test --no-version-check
 ```
+
+## 9. V2.3 外部情报命中样例
+
+目标：验证 `external_intelligence` 已接入 `precheck / secondary-check / MCP`，并能在 XAI 面板展示 `external_intelligence` 节点。
+
+推荐样例：
+
+- 收款人：`小e`
+- 金额：`300`
+- 城市：`上海`
+- 语义摘要：`正常生活转账。`
+
+预期结果：
+
+- `decision = block`
+- `external_intelligence.status = hit`
+- `external_intelligence.max_risk_level = high`
+- `explain_pack.nodes` 包含 `external_intelligence`
+
+PowerShell 触发示例：
+
+```powershell
+$bodyExternal = @{
+  payee_name = '小e'
+  amount = 300
+  context = @{
+    session_id = 'manual-v23-external'
+    device_id = 'manual-device'
+    platform = 'powershell'
+    current_city = '上海'
+    lat = 31.2304
+    lng = 121.4737
+    recent_page = 'home'
+    last_action = 'tap_transfer'
+    semantic_summary = '正常生活转账。'
+  }
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/v1/transfers/precheck' -ContentType 'application/json' -Body $bodyExternal
+```
+
+MCP 工具验证：
+
+- 工具名：`screen_external_intelligence`
+- 入参：`payee_name = 小e`
+- 预期：返回 `status = hit`

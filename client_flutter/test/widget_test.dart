@@ -5,14 +5,14 @@ import 'package:flutter_base/banking_api.dart';
 import 'package:flutter_base/main.dart';
 
 void main() {
-  testWidgets('renders dashboard demo content', (WidgetTester tester) async {
+  testWidgets('renders dashboard shell', (WidgetTester tester) async {
     await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
     await tester.pumpAndSettle();
 
-    expect(find.text('银行 AI 智能体风控演示'), findsOneWidget);
-    expect(find.text('演示入口'), findsOneWidget);
-    expect(find.text('风险演示'), findsOneWidget);
-    expect(find.text('总资产'), findsOneWidget);
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.byIcon(Icons.shield_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.receipt_long_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.smart_toy_outlined), findsOneWidget);
   });
 
   testWidgets('opens ai assistant sheet', (WidgetTester tester) async {
@@ -22,7 +22,6 @@ void main() {
     await tester.tap(find.byIcon(Icons.smart_toy_outlined));
     await tester.pumpAndSettle();
 
-    expect(find.text('AI 助手'), findsWidgets);
     expect(find.byType(TextField), findsOneWidget);
   });
 
@@ -30,11 +29,114 @@ void main() {
     await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('账单'));
+    await tester.tap(find.byIcon(Icons.receipt_long_rounded));
     await tester.pumpAndSettle();
 
-    expect(find.text('账单明细'), findsOneWidget);
-    expect(find.text('工资入账'), findsOneWidget);
+    expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+    expect(find.text('Salary Credit'), findsOneWidget);
+  });
+
+  testWidgets('shows all explain nodes in secondary dialog', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1280, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('XAI'), findsOneWidget);
+    expect(find.textContaining('External Intel'), findsOneWidget);
+    expect(find.textContaining('Decision'), findsOneWidget);
+  });
+
+  mainDataContractTests();
+}
+
+void mainDataContractTests() {
+  test('builds fallback explain pack for precheck payload', () {
+    final TransferPrecheckResult result = TransferPrecheckResult.fromJson(
+      <String, dynamic>{
+        'decision': 'interrogate',
+        'risk_level': 'medium',
+        'flag_s': 0.61,
+        'g_behavior': 0.44,
+        'g_dynamic': 0.72,
+        'final_risk': 0.59,
+        'reasons': <String>['remote city', 'new payee'],
+        'confirmation_token': 'demo-token',
+        'assistant_message': 'Please confirm the transfer.',
+        'risk_classification': <String, dynamic>{
+          'risk_category': 'remote_large_transfer',
+          'risk_level': 'medium',
+          'block_hint': false,
+          'matched_keywords': <String>['remote', 'large_amount'],
+          'matched_scenarios': <String>['remote_large_transfer'],
+          'analysis': 'Matched remote large transfer risk scenario.',
+          'follow_up_questions': <String>['What is the relationship?'],
+          'suggested_reply_examples': <String>['This is a normal repayment.'],
+        },
+      },
+    );
+
+    expect(result.explainPack.headline, isNotEmpty);
+    expect(result.explainPack.scoreBreakdown.finalRisk, closeTo(0.59, 0.0001));
+    expect(result.explainPack.nodes, isNotEmpty);
+    expect(result.explainPack.nodes.first.score, closeTo(0.72, 0.0001));
+  });
+
+  test('parses explain pack for secondary payload', () {
+    final TransferSecondaryCheckResult result =
+        TransferSecondaryCheckResult.fromJson(
+      <String, dynamic>{
+        'secondary_decision': 'block_secondary',
+        'reasons': <String>['high risk keyword'],
+        'final_risk_after_secondary': 0.93,
+        'assistant_message': 'Secondary check failed.',
+        'risk_classification': <String, dynamic>{
+          'risk_category': 'safe_account_scam',
+          'risk_level': 'high',
+          'block_hint': true,
+          'matched_keywords': <String>['safe account'],
+          'matched_scenarios': <String>['safe_account_scam'],
+          'analysis': 'Matched high-risk scam phrase.',
+          'follow_up_questions': <String>['Did anyone ask for a code?'],
+          'suggested_reply_examples': <String>['The caller asked for a verification code.'],
+        },
+        'explain_pack': <String, dynamic>{
+          'headline': 'Secondary check failed',
+          'recommended_action': 'Stop the transfer and contact support',
+          'score_breakdown': <String, dynamic>{
+            'flag_s': 0.8,
+            'g_behavior': 0.7,
+            'g_dynamic': 0.95,
+            'final_risk': 0.93,
+          },
+          'nodes': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'semantic',
+              'title': 'Semantic Signal',
+              'level': 'high',
+              'summary': 'Matched scam language',
+              'detail': 'Contains safe-account and code-sharing cues',
+              'score': 0.95,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(result.explainPack.headline, 'Secondary check failed');
+    expect(result.explainPack.nodes.first.title, 'Semantic Signal');
+    expect(result.explainPack.scoreBreakdown.finalRisk, closeTo(0.93, 0.0001));
+    expect(result.explainPack.nodes.first.score, closeTo(0.95, 0.0001));
   });
 }
 
@@ -45,34 +147,32 @@ class _FakeApiClient implements BankingApiClient {
     required ClientContextData context,
   }) async {
     return const ChatReply(
-      assistantMessage: '当前可用余额为 2500.00 元。',
+      assistantMessage: 'Current available cash balance is 2500.00 CNY.',
       usedTools: <ToolUsageItem>[
-        ToolUsageItem(name: 'get_account_summary', summary: '账户摘要'),
+        ToolUsageItem(name: 'get_account_summary', summary: 'Account snapshot'),
       ],
       suggestedActions: <SuggestedActionItem>[
-        SuggestedActionItem(label: '发起转账', action: 'open_transfer'),
+        SuggestedActionItem(label: 'Start transfer', action: 'open_transfer'),
       ],
     );
   }
 
   @override
-  Future<TransferConfirmResult> confirmTransfer(
-    String confirmationToken,
-  ) async {
+  Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
     return TransferConfirmResult(
       success: true,
-      assistantMessage: '转账已完成',
+      assistantMessage: 'Transfer completed.',
       cashBalance: 2000,
       wealthBalance: 18000,
       totalAssets: 20000,
       latestTransaction: TransactionRecord(
         id: 'txn-demo',
-        title: '转账给 小b',
-        subtitle: '经智能体风控确认后执行',
+        title: 'Transfer to Xiao B',
+        subtitle: 'Executed after risk confirmation',
         amount: 500,
         isIncome: false,
         category: 'transfer',
-        city: '上海',
+        city: 'Shanghai',
         createdAt: '2026-03-16T10:00:00',
         status: 'posted',
       ),
@@ -82,7 +182,7 @@ class _FakeApiClient implements BankingApiClient {
   @override
   Future<DashboardData> fetchDashboard() async {
     return DashboardData(
-      userName: '小a',
+      userName: 'Demo User',
       cashBalance: 2500,
       wealthBalance: 18000,
       totalAssets: 20500,
@@ -90,12 +190,12 @@ class _FakeApiClient implements BankingApiClient {
       recentTransactions: <TransactionRecord>[
         TransactionRecord(
           id: 'txn-1',
-          title: '工资入账',
-          subtitle: '公司薪酬',
+          title: 'Salary Credit',
+          subtitle: 'Monthly payroll',
           amount: 12000,
           isIncome: true,
           category: 'income',
-          city: '上海',
+          city: 'Shanghai',
           createdAt: '2026-03-14T09:00:00',
           status: 'posted',
         ),
@@ -103,7 +203,7 @@ class _FakeApiClient implements BankingApiClient {
       spendingSummary: const <SpendingSummaryItem>[
         SpendingSummaryItem(category: 'food', totalAmount: 86),
       ],
-      demoTip: '演示模式已开启：异地、大额、首次收款人会触发智能体风控确认。',
+      demoTip: 'Demo mode is enabled: remote, large and first-time payee patterns trigger checks.',
     );
   }
 
@@ -113,12 +213,12 @@ class _FakeApiClient implements BankingApiClient {
       items: <TransactionRecord>[
         TransactionRecord(
           id: 'txn-1',
-          title: '工资入账',
-          subtitle: '公司薪酬',
+          title: 'Salary Credit',
+          subtitle: 'Monthly payroll',
           amount: 12000,
           isIncome: true,
           category: 'income',
-          city: '上海',
+          city: 'Shanghai',
           createdAt: '2026-03-14T09:00:00',
           status: 'posted',
         ),
@@ -138,18 +238,79 @@ class _FakeApiClient implements BankingApiClient {
     return const TransferPrecheckResult(
       decision: 'interrogate',
       riskLevel: 'high',
-      reasons: <String>['当前操作地点异常', '金额较大'],
+      flagS: 0.62,
+      gBehavior: 0.41,
+      gDynamic: 0.74,
+      finalRisk: 0.58,
+      reasons: <String>['location anomaly', 'large amount'],
       confirmationToken: 'confirm-demo',
-      assistantMessage: '本次转账需要二次确认。',
+      assistantMessage: 'Need secondary confirmation.',
       riskClassification: RiskClassificationData(
-        riskCategory: '异地大额异常转账',
+        riskCategory: 'remote_large_transfer',
         riskLevel: 'medium',
         blockHint: false,
-        matchedKeywords: <String>['异地', '大额'],
-        matchedScenarios: <String>['异地大额异常转账'],
-        analysis: '命中异地大额风险场景。',
-        followUpQuestions: <String>['请说明你与收款人的关系。', '请说明本次转账用途。'],
-        suggestedReplyExamples: <String>['收款人是小b，这次转账用于归还借款。'],
+        matchedKeywords: <String>['remote', 'large_amount'],
+        matchedScenarios: <String>['remote_large_transfer'],
+        analysis: 'Matched remote large transfer risk scenario.',
+        followUpQuestions: <String>[
+          'What is your relationship with the payee?',
+          'What is the purpose of this transfer?',
+        ],
+        suggestedReplyExamples: <String>[
+          'The payee is Xiao B, this transfer is for a normal repayment.',
+        ],
+      ),
+      explainPack: ExplainPackData(
+        headline: 'Secondary confirmation required',
+        recommendedAction: 'Explain the relationship and transfer purpose before continuing.',
+        scoreBreakdown: RiskScoreBreakdownData(
+          flagS: 0.62,
+          gBehavior: 0.41,
+          gDynamic: 0.74,
+          finalRisk: 0.58,
+        ),
+        nodes: <ExplainNodeData>[
+          ExplainNodeData(
+            id: 'static',
+            title: 'Static Risk',
+            level: 'medium',
+            summary: 'Remote city and new payee.',
+            detail: 'The current city is unusual and the payee has not been seen recently.',
+            score: 0.62,
+          ),
+          ExplainNodeData(
+            id: 'behavior',
+            title: 'Behavior Signal',
+            level: 'medium',
+            summary: 'Typing pause and page switching were detected.',
+            detail: 'The precheck observed longer input duration and multiple interaction signals.',
+            score: 0.41,
+          ),
+          ExplainNodeData(
+            id: 'semantic',
+            title: 'Semantic Risk',
+            level: 'medium',
+            summary: 'Matched remote large transfer scenario.',
+            detail: 'The transfer context contains remote-city and large-amount cues.',
+            score: 0.74,
+          ),
+          ExplainNodeData(
+            id: 'external_intelligence',
+            title: 'External Intel',
+            level: 'medium',
+            summary: 'External negative intelligence flagged the payee.',
+            detail: 'Recent complaints suggest abnormal collection behavior and require more checks.',
+            score: 0.55,
+          ),
+          ExplainNodeData(
+            id: 'decision',
+            title: 'Decision',
+            level: 'medium',
+            summary: 'Escalate to secondary interrogation.',
+            detail: 'Continue only after the user provides a credible explanation.',
+            score: 0.58,
+          ),
+        ],
       ),
     );
   }
@@ -162,18 +323,38 @@ class _FakeApiClient implements BankingApiClient {
   }) async {
     return const TransferSecondaryCheckResult(
       secondaryDecision: 'pass_secondary',
-      reasons: <String>['用户说明合理'],
+      reasons: <String>['user explanation looks reasonable'],
       finalRiskAfterSecondary: 0.36,
-      assistantMessage: '二次校验通过，可继续确认转账。',
+      assistantMessage: 'Secondary check passed. You may continue.',
       riskClassification: RiskClassificationData(
-        riskCategory: '正常转账',
+        riskCategory: 'normal_transfer',
         riskLevel: 'low',
         blockHint: false,
         matchedKeywords: <String>[],
-        matchedScenarios: <String>['正常转账'],
-        analysis: '当前未命中高风险场景。',
-        followUpQuestions: <String>['请说明你与收款人的关系。'],
-        suggestedReplyExamples: <String>['收款人是小b，这次转账用于还款。'],
+        matchedScenarios: <String>['normal_transfer'],
+        analysis: 'No high-risk scenario was matched after the explanation.',
+        followUpQuestions: <String>['What is your relationship with the payee?'],
+        suggestedReplyExamples: <String>['This is a normal repayment to a known friend.'],
+      ),
+      explainPack: ExplainPackData(
+        headline: 'Secondary check passed',
+        recommendedAction: 'Continue with transfer confirmation.',
+        scoreBreakdown: RiskScoreBreakdownData(
+          flagS: 0.0,
+          gBehavior: 0.0,
+          gDynamic: 0.0,
+          finalRisk: 0.36,
+        ),
+        nodes: <ExplainNodeData>[
+          ExplainNodeData(
+            id: 'secondary',
+            title: 'Secondary Decision Basis',
+            level: 'low',
+            summary: 'The explanation is consistent.',
+            detail: 'The relationship and purpose are coherent and do not include high-risk instructions.',
+            score: 0.36,
+          ),
+        ],
       ),
     );
   }

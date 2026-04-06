@@ -20,6 +20,9 @@ class RiskInput:
     classification_block_hint: bool = False
     classification_keywords: Optional[list[str]] = None
     classification_scenarios: Optional[list[str]] = None
+    external_intelligence_risk_level: Optional[str] = None
+    external_intelligence_hits: Optional[list[str]] = None
+    external_intelligence_block_hint: bool = False
     input_pause_count: Optional[int] = None
     input_duration_ms: Optional[int] = None
     extra_signals: Optional[dict[str, Union[float, int, str, bool]]] = None
@@ -69,6 +72,12 @@ class RiskEngine:
         flag_s = self._calculate_static_score(payload, reasons)
         g_behavior = self._calculate_behavior_score(payload)
         g_dynamic, hard_block = self._calculate_dynamic_score(payload, reasons)
+        external_dynamic, external_hard_block = self._calculate_external_intelligence_score(
+            payload,
+            reasons,
+        )
+        g_dynamic = max(g_dynamic, external_dynamic)
+        hard_block = hard_block or external_hard_block
         final_risk = self._calculate_final_risk(
             flag_s=flag_s,
             g_behavior=g_behavior,
@@ -225,6 +234,30 @@ class RiskEngine:
 
         reasons.append(f"知识库提供了辅助风险线索：{classification_category}。")
         return 0.3, False
+
+    def _calculate_external_intelligence_score(
+        self,
+        payload: RiskInput,
+        reasons: list[str],
+    ) -> tuple[float, bool]:
+        risk_level = (payload.external_intelligence_risk_level or "").strip().lower()
+        hits = payload.external_intelligence_hits or []
+        if not risk_level or not hits:
+            return 0.0, False
+
+        hit_summary = "；".join(hits[:2])
+        if risk_level == "high":
+            reasons.append(f"外部情报名单命中高风险对象：{hit_summary}")
+            return 1.0 if payload.external_intelligence_block_hint else 0.9, (
+                payload.external_intelligence_block_hint
+            )
+
+        if risk_level == "medium":
+            reasons.append(f"外部情报返回中风险关注：{hit_summary}")
+            return 0.55, False
+
+        reasons.append(f"外部情报返回低风险提示：{hit_summary}")
+        return 0.25, False
 
     def _calculate_final_risk(
         self,

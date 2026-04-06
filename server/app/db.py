@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS risk_scene_knowledge (
     suspicious_behaviors_json TEXT NOT NULL,
     follow_up_questions_json TEXT NOT NULL,
     suggested_reply_examples_json TEXT NOT NULL,
+    target_user_profile_json TEXT NOT NULL DEFAULT '[]',
     embedding_text TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -171,9 +172,16 @@ def _ensure_column(
     connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
 
 
+# HIRD-H: 感知层基础设施，负责为知识库与风控链路补齐运行时所需表结构。
 def init_database() -> None:
     with get_connection() as connection:
         connection.executescript(SCHEMA_SQL)
+        _ensure_column(
+            connection,
+            "risk_scene_knowledge",
+            "target_user_profile_json",
+            "target_user_profile_json TEXT NOT NULL DEFAULT '[]'",
+        )
         _ensure_column(
             connection,
             "risk_events",

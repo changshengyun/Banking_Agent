@@ -1,4 +1,4 @@
-﻿# Sentinel-Mobile Codex 执行流程
+# Sentinel-Mobile Codex 执行流程
 
 ## 1. 文件定位
 
@@ -8,7 +8,6 @@
 - `skill/project-manager/SKILL.md`：项目经理 SOP skill。
 - `skill/architect/SKILL.md`：技术总监/架构师 skill。
 - `skill/engineer/SKILL.md`：工程师 skill。
-- `work.md`：已删除，不再维护。
 
 ## 2. 角色定义
 
@@ -16,7 +15,7 @@
 
 - 负责业务目标、优先级和验收方向。
 
-### 技术总监 Agent
+### 技术总监 Agent（Architect Skill）
 
 - 只读优先，默认不直接改业务代码。
 - 职责：
@@ -26,16 +25,25 @@
   4. 在每轮集成前做 DoD 审查。
   5. 在每个 MVP 结束时确认是否允许提交 Git。
 
+### 项目经理 Agent（Project Manager Skill）
+
+- 职责：
+  1. 把 MVP 目标拆成最小可交付任务切片。
+  2. 建立依赖顺序：合同先行 → 后端/前端并行 → 测试/文档收尾。
+  3. 划定文件所有权边界，防止 Agent 互相覆盖。
+  4. 定义合并门禁清单。
+
 ### 主执行 Codex
 
 - 负责主线程编排、集成、冲突处理、最终交付。
 - 负责把技术总监 Agent 的结论真正落到代码、测试、README 和 Git 同步动作中。
+- **每完成一个任务切片，立即执行 `/simplify` 对变更代码做质量审查。**
 
-### 下游开发 Agent
+### 下游开发 Agent（Engineer Skill）
 
 - 只负责被分配的明确子任务，遵守文件所有权边界，不互相覆盖改动。
 
-## 3.1 SOP Skill 映射
+## 3. SOP Skill 映射
 
 ### Project Manager Skill
 
@@ -52,40 +60,37 @@
 - 核心任务：根据已确认契约实现单一模块并补测试。
 - 关注点：单模块交付、最小 patch、同边界验证、不越权改共享合同。
 
-## 3. 固定铁律
+## 4. 固定铁律
 
 - 必须按 `V1 -> V2 -> V3 -> V4` 顺序推进，不允许跳级。
 - 每次有实际开发改动，都要同步更新根目录 `README.md`。
+- **每完成一个任务切片，执行 `/simplify` 审查变更代码。**
 - 每个 MVP 阶段完成后，必须执行：
   1. 技术总监 Agent 审查 DoD。
-  2. 运行相关测试。
+  2. 运行相关测试（后端 pytest + 前端 flutter test）。
   3. 更新 `README.md`。
   4. 回填 `MVP.md` 当前阶段完成情况。
   5. `git add -> git commit -> git push`。
 - 如果技术总监 Agent 判断当前版本未满足 DoD，不允许进入下一 MVP。
 
-## 4. 当前阶段结论
+## 5. 当前阶段结论
 
-- 当前结论：`MVP V2 已完成并进入 Git 收口 → MVP V3 待放行`。
-- 当前开发主线：完成 V2 文档、测试与 Git 收口；V3 仅允许做范围澄清和技术预案，不启动代码开发。
-- 当前禁止事项：
-  - 不要提前展开 V4 运行时 Swarm 架构。
-  - 不要在 V2 未闭环前引入大规模新基础设施。
-  - 不要跳过 README 和 Git 同步。
-  - V2-patch-2 依赖 V2-patch-1 完成后才能启动；V2-patch-3 依赖 V2-patch-2 完成后才能启动。
+- **当前结论：`MVP V2 已完成 → MVP V3 正式放行开发`。**
+- V2 收口验证已通过（见第 9 节）。
+- V3 主开发线：语义感知升级 → 行为脉冲建模 → 隐私护栏。
 
-## 5. 当前版本的多 Agent 协作流程
+## 6. V3 多 Agent 协作流程
 
 ### 技术总监 Agent 的监督门禁
 
-1. 先对比 `MVP.md` 和当前代码，确认当前活跃阶段。
-2. 输出本轮允许开发的任务范围，只能来自当前 MVP。
+1. 先对比 `MVP.md` 和当前代码，确认当前活跃阶段为 V3。
+2. 输出本轮允许开发的任务范围，只能来自 V3 DoD。
 3. 为下游 Agent 划分不重叠的文件责任范围。
 4. 在主执行 Codex 集成前，检查：
-   - 是否超出当前 MVP 范围。
+   - 是否超出 V3 范围。
    - 是否更新了 README。
    - 是否补齐了测试与文档。
-   - 是否满足当前 MVP 的 DoD。
+   - 是否满足 V3 DoD。
 5. 通过后才允许进入 Git 提交流程。
 
 ### 四道固定门禁
@@ -98,6 +103,7 @@
 #### 门禁 2：质量门禁
 
 - 后端测试、前端测试、最小手工回归至少各过一轮。
+- **每个任务切片完成后执行 `/simplify`，质量审查通过后才能进入下一切片。**
 - 任一关键回归失败，不允许进入下一 MVP。
 
 #### 门禁 3：文档门禁
@@ -110,200 +116,157 @@
 - 每次 MVP 完成必须执行一次独立 Git 提交。
 - 未完成独立提交与推送，不允许宣告进入下一阶段开发。
 
-### 当前版本建议的 Agent 分工
+### V3 Agent 分工
 
-#### Agent A：感知/MCP 后端 Agent
+#### Agent A：语义升级后端 Agent
 
-- 负责范围：`server/app/services/`、`server/app/api/`、`server/app/schemas/`、`mcp_servers/`。
-- 当前任务：
-  1. 补齐 V2 所需的解释包/XAI 数据结构。
-  2. 统一感知输入边界，梳理 `ClientContext`、KYC、地理位置、设备与行为信号的使用方式。
-  3. 为外部情报工具提供稳定接口层，并同步到 MCP。
+- 负责范围：`server/app/services/risk_knowledge_base.py`、`server/app/services/agent_service.py`。
+- V3 任务：
+  1. 引入 `BAAI/bge-small-zh-v1.5`（95MB，CPU 友好）替代纯关键词匹配。
+  2. 实现双阶段语义检索：向量召回（FAISS）→ 关键词精排。
+  3. 保持现有 `RiskClassificationPayload` 合同不变，仅升级内部检索逻辑。
 
-#### Agent B：前端 XAI/交互 Agent
+#### Agent B：行为脉冲建模 Agent
 
-- 负责范围：`client_flutter/lib/`。
-- 当前任务：
-  1. 在风险弹窗或独立面板中展示解释包。
-  2. 让用户能看懂“为什么被怀疑、哪一层信号触发、下一步该怎么做”。
-  3. 保持现有账单弹窗与二次质询流程不回退。
+- 负责范围：`server/app/services/risk_engine.py`、`server/app/schemas/`。
+- V3 任务：
+  1. 建立 S3 行为脉冲模型：输入停顿分布、输入时长、粘贴次数、切换次数。
+  2. 把行为信号从简单阈值升级为加权脉冲评分。
+  3. 新增 `behavior_pulse_score` 字段到 `RiskAssessment`（向后兼容）。
 
-#### Agent C：测试与文档 Agent
+#### Agent C：隐私护栏 Agent
+
+- 负责范围：`server/app/api/routes/`、`server/app/schemas/`。
+- V3 任务：
+  1. 在 API 入口对 `semantic_summary` 做 PII 脱敏（姓名、手机号、身份证号替换为占位符）。
+  2. 确保 LLM 调用链路不暴露明文敏感信息。
+  3. 新增 `pii_masked: bool` 字段到请求日志（不进入响应体）。
+
+#### Agent D：测试与文档 Agent
 
 - 负责范围：`server/tests/`、`client_flutter/test/`、`docs/`、`README.md`。
-- 当前任务：
-  1. 为 V2 的解释包/XAI 展示补测试。
-  2. 统一演示脚本、测试样例与 README 描述。
-  3. 确保每轮改动都能被回归验证。
+- V3 任务：
+  1. 为语义升级补回归测试（相同输入，语义匹配结果不低于关键词匹配）。
+  2. 为行为脉冲评分补单元测试。
+  3. 更新 README 和演示脚本。
 
 ### 主执行 Codex 的集成顺序
 
-1. 先让技术总监 Agent确认本轮目标只属于当前 MVP。
-2. 并行推进 Agent A 与 Agent B。
-3. 在后端接口稳定后，交给 Agent C 补测试与 README。
-4. 主执行 Codex 负责最终集成、冲突处理和验收。
-5. 再由技术总监 Agent 做最终放行审查。
+1. 技术总监 Agent 确认本轮目标只属于 V3。
+2. **Agent A（语义升级）先行**，因为它影响分类合同的内部实现。
+3. Agent B（行为脉冲）与 Agent A 并行，写集不重叠。
+4. Agent C（隐私护栏）在 Agent A/B 稳定后启动，只改 API 入口层。
+5. Agent D 在接口稳定后补测试与文档。
+6. 主执行 Codex 负责最终集成、冲突处理和验收。
+7. 技术总监 Agent 做最终放行审查。
 
-## 6. 按 MVP 顺序的 Codex 开发流程
+## 7. V3 开发任务清单（按依赖顺序）
 
-### 第一步：关闭 V1
+### 阶段 V3.1：语义检索升级（优先执行，无外部依赖）
 
-- 仅允许处理 V1 收尾问题：
-  - 修正文档与测试口径不一致。
-  - 清理旧 mock、旧原型、旧描述残留。
-  - 保证 README 与当前实现一致。
-- 退出条件：`MVP V1` 小节的 DoD 全部为已完成。
+**目标**：用向量语义相似度替代纯关键词字面匹配，解决"关键词匹配无法识别语义变体"的核心问题。
 
-### 第二步：推进 V2（当前主线）
+**技术选型**：
+- 模型：`BAAI/bge-small-zh-v1.5`（95MB，CPU 推理，sentence-transformers 兼容）
+- 向量库：`faiss-cpu`（纯 Python/C++，无需服务器）
+- 推理加速：`fastembed` 或直接 `sentence-transformers`
 
-- 开发顺序固定为：
-  1. `V2.1` 感知上下文标准化。
-  2. `V2.2` 最小 XAI 看板。
-  3. `V2.3` 外部情报工具适配层。
-- 当前状态：`V2.1 + V2.2 + V2.3` 已完成实现与回归。
-- 当前轮次的最小交付：
-  - 后端返回结构化解释包。
-  - 前端展示可折叠或直出的 XAI 风险解释面板。
-  - README、测试、演示脚本同步更新。
-  - 外部情报结果可进入预检、二次质询与 MCP 工具链路。
+**任务切片**：
 
-### 第二步补丁：V2-patch（已完成）
-
-> 背景：V2 主体功能已完成，但代码审查发现三个阻塞性问题需在进入 V3 前修复：
-> 1. 风险知识库关键词覆盖不足，字面匹配导致场景误判。
-> 2. 二次质询追问内容与风险类型无关，Agent 缺乏场景锚点。
-> 3. Agent 无法识别用户回复中的语义错误信息（如"我是警察让我转的"被当作正常说明）。
-
-#### V2-patch-1：扩充风险知识库（无依赖，优先执行）
-
-**问题根源**：`risk_knowledge_base.py` 中 `DEFAULT_RISK_SCENARIOS` 关键词覆盖面窄，高危短语与普通关键词权重相同（均+3分），`semantic_summary` 为空时直接返回低风险。
-
-**交付物**：
-
-- 文件：`server/app/services/risk_knowledge_base.py`
-  - 为每个场景补充关键词，覆盖口语化表达（如"帮我付一下"→熟人借款、"说我涉案"→冒充公检法）。
-  - 高危短语命中分值从 +3 提升至 +6，与普通关键词区分。
-  - `semantic_summary` 为空时，改为基于 `amount + city + is_known_payee` 做兜底分类，不直接返回低风险。
-  - 新增风险场景：
-    - `investment_fraud`（投资理财诈骗）：关键词含"内部消息"、"稳赚"、"跟单"、"私募"。
-    - `romance_scam`（情感诈骗）：关键词含"网恋"、"见面前转账"、"礼物清关"。
-    - `part_time_fraud`（刷单兼职诈骗）：关键词含"刷单"、"垫付"、"佣金"、"任务单"。
-  - 完善用户画像字段：在 `RiskScenario` 中增加 `target_user_profile` 字段，标注该场景的典型受害者特征（如"老年用户"、"在校学生"），供后续用户画像匹配使用。
-
-- 文件：`server/app/schemas/risk.py`
-  - `RiskClassificationPayload` 增加 `high_risk_phrase_hits: list[str]` 字段，区分普通关键词命中和高危短语命中。
-
-- 文件：`server/tests/test_risk_scenarios.py`
-  - 补充新场景的分类测试用例，覆盖口语化输入。
+| # | 任务 | 负责 Agent | 文件边界 |
+|---|------|-----------|---------|
+| V3.1-a | 安装依赖，封装 `EmbeddingService`（单例，懒加载模型） | Agent A | `server/app/services/embedding_service.py`（新建） |
+| V3.1-b | 在 `RiskKnowledgeBaseService` 中新增向量索引构建逻辑 | Agent A | `server/app/services/risk_knowledge_base.py` |
+| V3.1-c | 把 `classify_text` 改为双阶段：向量召回 Top-5 → 关键词精排 | Agent A | `server/app/services/risk_knowledge_base.py` |
+| V3.1-d | 补回归测试：语义变体输入（如"说我涉案"）能正确分类 | Agent D | `server/tests/test_risk_scenarios.py` |
 
 **完成标准**：
-- [x] 新增3个风险场景，关键词总量显著扩充。
-- [x] 高危短语命中可独立触发 `risk_level=high`（即使普通关键词未命中）。
-- [x] `semantic_summary` 为空时，金额≥5000 且新增收款人的场景不再返回 `risk_level=low`。
-- [x] 新场景测试用例全部通过。
+- [ ] 语义变体输入（不含关键词但语义相近）能正确命中风险场景。
+- [ ] 现有 29 条测试全部通过（不回退）。
+- [ ] 模型加载时间 < 5s，单次分类延迟 < 200ms（CPU）。
 
 ---
 
-#### V2-patch-2：差异化追问注入（依赖 V2-patch-1）
+### 阶段 V3.2：行为脉冲建模（与 V3.1 并行）
 
-**问题根源**：`bank_host.py` 中 `secondary_question` 写死为通用问题，`agent_service` 收到的 `follow_up_questions` 虽然按场景生成，但未被注入到 Agent 的系统提示词中作为强制追问框架。
+**目标**：把行为信号从简单阈值判断升级为加权脉冲评分，提升行为风险的区分度。
 
-**交付物**：
+**任务切片**：
 
-- 文件：`server/app/services/bank_host.py`
-  - `secondary_check_transfer()` 中，将 `secondary_question` 改为从 `risk_classification.follow_up_questions` 动态取第一条，而非写死通用问题。
-  - 将 `risk_classification.follow_up_questions` 和 `risk_classification.matched_scenarios` 一并传入 `evaluate_secondary_intercept()`。
-
-- 文件：`server/app/services/agent_service.py`（或对应 Agent 提示词构建函数）
-  - 在 Agent 系统提示词中，按 `risk_category` 注入对应的追问框架：
-    - `冒充公检法`：强制追问"是否通过官方电话核实案号"、"是否被要求转账核验"。
-    - `安全账户诈骗`：强制追问"对方是否明确说转到安全账户"、"是否要求提供验证码"。
-    - `熟人借款风险`：强制追问"是否视频核验身份"、"是否有共同联系人可确认"。
-    - `客服退款诈骗`：强制追问"是否通过官方App核实"、"是否被要求下载软件"。
-    - `验证码/屏幕共享诈骗`：强制追问"是否有人索取验证码"、"是否被要求开启屏幕共享"。
-    - `投资理财诈骗`（新增）：强制追问"对方是否承诺稳定收益"、"是否在非官方平台操作"。
-    - `情感诈骗`（新增）：强制追问"是否线下见过面"、"是否被要求转账才能见面"。
-    - `刷单兼职诈骗`（新增）：强制追问"是否需要先垫付资金"、"是否通过官方平台接单"。
+| # | 任务 | 负责 Agent | 文件边界 |
+|---|------|-----------|---------|
+| V3.2-a | 定义 `BehaviorPulse` 数据类，封装脉冲评分逻辑 | Agent B | `server/app/services/risk_engine.py` |
+| V3.2-b | 把 `_calculate_behavior_score` 升级为脉冲加权版本 | Agent B | `server/app/services/risk_engine.py` |
+| V3.2-c | `RiskAssessment` 新增 `behavior_pulse_score` 字段（向后兼容） | Agent B | `server/app/services/risk_engine.py`、`server/app/schemas/` |
+| V3.2-d | 补行为脉冲单元测试 | Agent D | `server/tests/test_risk_scenarios.py` |
 
 **完成标准**：
-- [x] 二次质询的追问问题与风险类型一一对应，不再使用通用问题。
-- [x] Agent 提示词中包含当前风险场景的强制核验点。
-- [x] 测试用例覆盖：冒充公检法场景下，Agent 必须追问"官方电话核实"相关内容。
+- [ ] 高频停顿 + 粘贴 + 切换 App 的组合能触发更高行为风险分。
+- [ ] 现有行为相关测试不回退。
 
 ---
 
-#### V2-patch-3：Agent 语义识别增强（依赖 V2-patch-2）
+### 阶段 V3.3：PII 隐私护栏（依赖 V3.1 完成后启动）
 
-**问题根源**：Agent 当前仅靠 LLM 通用判断用户回复，缺乏对"高风险回复模式"的识别规则，导致"警察让我转的"、"客服说要验证资金"等高危回复可能被当作正常说明放行。
+**目标**：确保进入 LLM 的文本不含明文 PII，满足最小化原则。
 
-**交付物**：
+**任务切片**：
 
-- 文件：`server/app/services/agent_service.py`
-  - 在 `evaluate_secondary_intercept()` 的提示词中增加"高风险回复模式识别"规则层：
-    - 若用户回复中出现以下模式，Agent 必须输出 `block_secondary`，不得放行：
-      - 提及"公安/警察/检察/法院要求转账"。
-      - 提及"安全账户/资金清查/冻结前转账"。
-      - 提及"客服要求验证资金/刷流水"。
-      - 提及"对方要求提供验证码/屏幕共享"。
-      - 提及"稳赚/内部消息/跟单收益"。
-    - 若用户回复与 `risk_category` 完全无关（如被问"是否视频核验"，回复"我就是想转账"），Agent 应输出 `interrogate` 并追加追问，不得直接放行。
-  - 增加 `semantic_red_flags: list[str]` 字段到 Agent 返回结构，记录命中的高风险语义模式，供 `explain_pack` 展示。
-
-- 文件：`server/app/schemas/transfer.py`
-  - `TransferSecondaryCheckResponse` 增加 `semantic_red_flags: list[str]` 字段（可为空列表）。
-
-- 文件：`server/tests/test_api.py`
-  - 补充测试用例：
-    - 用户回复"警察让我转的" → 必须 `block_secondary`。
-    - 用户回复"客服说验证资金后退款" → 必须 `block_secondary`。
-    - 用户回复与问题无关 → 必须 `interrogate` 或 `block_secondary`，不得 `pass_secondary`。
+| # | 任务 | 负责 Agent | 文件边界 |
+|---|------|-----------|---------|
+| V3.3-a | 实现 `PiiMasker`：正则替换手机号、身份证号、姓名模式 | Agent C | `server/app/services/pii_masker.py`（新建） |
+| V3.3-b | 在 `AgentService._live_chat_response` 和 `evaluate_secondary_intercept` 入口调用 `PiiMasker` | Agent C | `server/app/services/agent_service.py` |
+| V3.3-c | 补 PII 脱敏单元测试 | Agent D | `server/tests/` |
 
 **完成标准**：
-- [x] 高风险回复模式命中时，Agent 强制输出 `block_secondary`。
-- [x] `semantic_red_flags` 字段在命中时非空，并已进入二次质询接口响应。
-- [x] 上述三条测试用例全部通过。
+- [ ] 含手机号/身份证号的 `semantic_summary` 进入 LLM 前已脱敏。
+- [ ] 脱敏不影响风险分类结果（语义保留）。
 
-### 第三步：V3 只在 V2 通过后启动
+---
 
-- 先行为感知，再隐私护栏，再合规建议。
-- 未通过 V2 DoD 前，不允许启动 V3 主开发。
+### V3 收口（所有切片完成后）
 
-### 第四步：V4 最后启动
+1. 技术总监 Agent 对照 V3 DoD 做完成度审查。
+2. 运行全量测试：`pytest server/tests/ -q` + `flutter test --no-version-check`。
+3. 更新 `README.md`（新增语义升级、行为脉冲、PII 护栏说明）。
+4. 回填 `MVP.md` V3 完成情况。
+5. Git 同步：`git add -> git commit -> git push`。
 
-- 只有在 V1-V3 形成稳定输入、解释、隐私和合规基础后，才进入治理闭环与运行时多 Agent 架构。
+## 8. 每轮开发完成后的固定收口动作
 
-## 7. 每轮开发完成后的固定收口动作
-
-1. 更新根目录 `README.md`。
-2. 回填 `MVP.md` 当前阶段状态。
-3. 运行受影响测试。
-4. 由技术总监 Agent 做 DoD 审查。
-5. Git 同步：
+1. **执行 `/simplify` 审查本轮变更代码。**
+2. 更新根目录 `README.md`。
+3. 回填 `MVP.md` 当前阶段状态。
+4. 运行受影响测试。
+5. 由技术总监 Agent 做 DoD 审查。
+6. Git 同步：
    - `git status`
    - `git add`
    - `git commit`
    - `git push`
 
-## 8. 当前版本的下一开发指令
-
-- 当前执行顺序：
-  1. **V2 收口**：更新 README、回填 MVP.md、整理 Showme_func、运行全量测试、执行 Git 提交。
-  2. **V3 放行审查**：仅在 V2 Git 同步完成后，由技术总监 Agent 放行进入 V3。
-  3. **V3 启动**：先做行为信号建模边界，再做隐私护栏与合规建议。
-
-- 当前禁止事项：
-  - 不允许在 V2 Git 收口完成前宣告进入 V3 主开发。
-  - 不允许跳过 README / MVP / Showme_func 的同步更新。
-  - 不允许跳过后端与前端回归测试。
-
-- V3 预备动作（当前允许整理，不允许提前大规模动代码）：
-  - 整理 S3 行为脉冲模型的信号采集清单。
-  - 评估向量检索替代字面关键词匹配的引入成本（作为 V3 技术选型输入）。
-
-## 9. V2 收口验证结果
+## 9. V2 收口验证结果（已完成）
 
 - `server/tests/test_api.py`：14 通过
 - `server/tests/test_risk_scenarios.py`：13 通过
 - `server/tests/test_patch2_secondary_followup.py`：2 通过
 - `flutter analyze --no-version-check`：通过
 - `flutter test --no-version-check`：6 通过
+
+## 10. 技术选型备忘（V3 引入）
+
+### 语义检索技术栈
+
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| 中文嵌入模型 | `BAAI/bge-small-zh-v1.5` | 95MB，CPU 友好，中文语义质量优秀 |
+| 向量检索库 | `faiss-cpu` | 纯 Python/C++，无需服务器，支持 IVF 索引 |
+| 推理框架 | `sentence-transformers` | 与 BGE 模型直接兼容，API 简洁 |
+| 备选加速 | `fastembed` | ONNX 后端，CPU 推理更快，依赖更轻 |
+
+### 多 Agent 协作模式（本项目采用）
+
+- **Orchestrator + Subagent 模式**：主执行 Codex 作为编排器，下游 Agent 各持独立文件边界。
+- **Plan-file 模式**：每个 Agent 开始前写计划到 `skill/` 对应 SKILL.md，执行后回填结果。
+- **Git worktree 隔离**：并行 Agent 使用独立 worktree，避免文件锁冲突。
+- **人工检查点**：每个任务切片完成后，主执行 Codex 做集成审查，再由技术总监 Agent 放行。

@@ -421,12 +421,13 @@ def test_secondary_check_returns_explain_pack_on_block_path(monkeypatch) -> None
     from server.app.services.agent_service import get_agent_service
 
     def fake_secondary_check(**kwargs):
-        return (
-            "block_secondary",
-            0.92,
-            ["命中高危关键词", "用户说明与风险场景不一致"],
-            "二次校验未通过，请停止转账。",
-            ["安全账户/资金清查"],
+        from server.app.services.agent_service import SecondaryResult
+        return SecondaryResult(
+            decision="block_secondary",
+            risk=0.92,
+            reasons=["命中高危关键词", "用户说明与风险场景不一致"],
+            assistant_message="二次校验未通过，请停止转账。",
+            semantic_red_flags=["安全账户/资金清查"],
         )
 
     monkeypatch.setattr(
@@ -502,13 +503,14 @@ def test_secondary_check_persists_dynamic_follow_up_question(monkeypatch) -> Non
     captured: dict = {}
 
     def fake_secondary_check(**kwargs):
+        from server.app.services.agent_service import SecondaryResult
         captured.update(kwargs)
-        return (
-            "pass_secondary",
-            0.36,
-            ["用户说明覆盖了当前核验点"],
-            "二次校验通过，可继续转账。",
-            [],
+        return SecondaryResult(
+            decision="pass_secondary",
+            risk=0.36,
+            reasons=["用户说明覆盖了当前核验点"],
+            assistant_message="二次校验通过，可继续转账。",
+            semantic_red_flags=[],
         )
 
     monkeypatch.setattr(
@@ -595,7 +597,7 @@ def test_secondary_intercept_prompt_includes_police_verification_points() -> Non
     fake_gateway = _FakeLlmGateway()
     service = AgentService(llm_gateway=fake_gateway)
 
-    decision, risk, reasons, assistant_message, semantic_red_flags = service.evaluate_secondary_intercept(
+    result = service.evaluate_secondary_intercept(
         user_reply="对方说自己是公安，让我配合处理。",
         semantic_summary="对方自称公安，要求我配合线上做笔录。",
         risk_category="冒充公检法",
@@ -605,11 +607,11 @@ def test_secondary_intercept_prompt_includes_police_verification_points() -> Non
         follow_up_questions=["你是否通过官方公开电话核实过对方身份和案号？"],
     )
 
-    assert decision == "block_secondary"
-    assert 0.0 <= risk <= 1.0
-    assert reasons
-    assert assistant_message
-    assert semantic_red_flags == []
+    assert result.decision == "block_secondary"
+    assert 0.0 <= result.risk <= 1.0
+    assert result.reasons
+    assert result.assistant_message
+    assert result.semantic_red_flags == []
     assert "官方电话核实案号或身份" in fake_gateway.user_prompt
     assert "是否被要求转账核验资金" in fake_gateway.user_prompt
     assert "冒充公安检法办案" in fake_gateway.user_prompt

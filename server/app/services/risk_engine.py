@@ -1,7 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Union
+
+
+class Decision(str, Enum):
+    PASS = "pass"
+    INTERROGATE = "interrogate"
+    BLOCK = "block"
+    PASS_SECONDARY = "pass_secondary"
+    BLOCK_SECONDARY = "block_secondary"
+
+
+def _normalize(text: str) -> str:
+    return text.strip().lower().replace(" ", "")
 
 
 @dataclass(frozen=True)
@@ -38,6 +51,7 @@ class RiskAssessment:
     g_behavior: float
     g_dynamic: float
     final_risk: float
+    behavior_pulse_score: float = 0.0
 
 
 class RiskEngine:
@@ -70,7 +84,8 @@ class RiskEngine:
         reasons: list[str] = []
 
         flag_s = self._calculate_static_score(payload, reasons)
-        g_behavior = self._calculate_behavior_score(payload)
+        behavior_pulse_score = self._calculate_behavior_pulse_score(payload)
+        g_behavior = behavior_pulse_score  # 在 V3 中行为分直接由脉冲模型驱动
         g_dynamic, hard_block = self._calculate_dynamic_score(payload, reasons)
         external_dynamic, external_hard_block = self._calculate_external_intelligence_score(
             payload,
@@ -88,12 +103,15 @@ class RiskEngine:
         decision = self._resolve_decision(final_risk)
         risk_level = self._resolve_risk_level(final_risk)
 
-        if decision == "block" and not any("拦截" in reason for reason in reasons):
+        if decision == Decision.BLOCK and not any("拦截" in reason for reason in reasons):
             reasons.append("风险评分达到拦截阈值，本次转账已被拦截。")
-        if decision == "interrogate" and not any("补充确认" in reason for reason in reasons):
+        if decision == Decision.INTERROGATE and not any("补充确认" in reason for reason in reasons):
             reasons.append("风险评分处于补充确认区间，需要进一步核验。")
-        if decision == "pass" and not reasons:
+        if decision == Decision.PASS and not reasons:
             reasons.append("未命中高风险规则，本次转账可放行。")
+
+        if behavior_pulse_score >= 0.6:
+            reasons.append(f"行为序列检测到高频停顿或异常切换（脉冲分: {behavior_pulse_score:.2f}），疑似受迫操作。")
 
         return RiskAssessment(
             decision=decision,
@@ -104,7 +122,50 @@ class RiskEngine:
             g_behavior=round(g_behavior, 4),
             g_dynamic=round(g_dynamic, 4),
             final_risk=round(final_risk, 4),
+            behavior_pulse_score=round(behavior_pulse_score, 4),
         )
+
+    def _calculate_behavior_pulse_score(self, payload: RiskInput) -> float:
+        # HIRD-R: 识别层，将零散行为信号转换为加权脉冲评分。
+        # 核心逻辑：输入停顿、粘贴、App 切换、时长异常的加权累加。
+        score = 0.10
+
+        # 1. 页面上下文脉冲
+        if _normalize(payload.recent_page) in self.BEHAVIOR_RISK_PAGE_HINTS:
+            score += 0.20
+
+        # 2. 关键动作脉冲
+        action = _normalize(payload.last_action)
+        if any(hint in action for hint in self.BEHAVIOR_RISK_ACTION_HINTS):
+            score += 0.20
+
+        # 3. 微观输入脉冲 (S3核心)
+        if payload.input_pause_count is not None:
+            # 高频停顿是“受迫操作”或“指令传达”的典型表现
+            if payload.input_pause_count >= 10:
+                score += 0.45
+            elif payload.input_pause_count >= 5:
+                score += 0.25
+
+        if payload.input_duration_ms is not None:
+            # 极短时长（脚本/复制）或极长时长（犹豫/传达）
+            if payload.input_duration_ms <= 1200:
+                score += 0.25
+            elif payload.input_duration_ms >= 60000:
+                score += 0.15
+
+        # 4. 扩展交互脉冲
+        paste_count = self._signal_value(payload.extra_signals, "paste_count")
+        if paste_count and paste_count >= 1:
+            score += 0.25
+
+        app_switch_count = self._signal_value(payload.extra_signals, "app_switch_count")
+        if app_switch_count is None:
+            app_switch_count = self._signal_value(payload.extra_signals, "switch_app_count")
+        if app_switch_count and app_switch_count >= 2:
+            score += 0.20
+
+        return self._clamp(score)
 
     def _calculate_static_score(self, payload: RiskInput, reasons: list[str]) -> float:
         score = 0.05
@@ -140,50 +201,6 @@ class RiskEngine:
 
         return self._clamp(score)
 
-    def _calculate_behavior_score(self, payload: RiskInput) -> float:
-        score = 0.10
-
-        if payload.recent_page.strip().lower() in self.BEHAVIOR_RISK_PAGE_HINTS:
-            score += 0.25
-
-        action = payload.last_action.strip().lower()
-        if any(hint in action for hint in self.BEHAVIOR_RISK_ACTION_HINTS):
-            score += 0.25
-
-        if payload.recent_transfer_count >= 2:
-            score += 0.20
-
-        if not payload.is_known_payee and payload.amount >= 5000:
-            score += 0.20
-
-        if payload.input_pause_count is not None:
-            if payload.input_pause_count >= 8:
-                score += 0.30
-            elif payload.input_pause_count >= 4:
-                score += 0.18
-
-        if payload.input_duration_ms is not None:
-            if payload.input_duration_ms <= 1500:
-                score += 0.18
-            elif payload.input_duration_ms >= 45000:
-                score += 0.12
-
-        paste_count = self._signal_value(payload.extra_signals, "paste_count")
-        if paste_count is not None and paste_count >= 1:
-            score += 0.20
-
-        app_switch_count = self._signal_value(payload.extra_signals, "app_switch_count")
-        if app_switch_count is None:
-            app_switch_count = self._signal_value(payload.extra_signals, "switch_app_count")
-        if app_switch_count is not None and app_switch_count >= 2:
-            score += 0.15
-
-        focus_lost_count = self._signal_value(payload.extra_signals, "focus_lost_count")
-        if focus_lost_count is not None and focus_lost_count >= 3:
-            score += 0.12
-
-        return self._clamp(score)
-
     def _signal_value(
         self, signals: dict[str, float | int | str | bool] | None, key: str
     ) -> float | None:
@@ -207,7 +224,7 @@ class RiskEngine:
     def _calculate_dynamic_score(
         self, payload: RiskInput, reasons: list[str]
     ) -> tuple[float, bool]:
-        classification_level = (payload.classification_risk_level or "").strip().lower()
+        classification_level = _normalize(payload.classification_risk_level or "")
         classification_category = (payload.classification_category or "").strip()
         matched_keywords = payload.classification_keywords or []
 
@@ -240,7 +257,7 @@ class RiskEngine:
         payload: RiskInput,
         reasons: list[str],
     ) -> tuple[float, bool]:
-        risk_level = (payload.external_intelligence_risk_level or "").strip().lower()
+        risk_level = _normalize(payload.external_intelligence_risk_level or "")
         hits = payload.external_intelligence_hits or []
         if not risk_level or not hits:
             return 0.0, False
@@ -272,12 +289,12 @@ class RiskEngine:
         weighted = (0.5 * flag_s) + (0.2 * g_behavior) + (0.3 * g_dynamic)
         return self._clamp(weighted)
 
-    def _resolve_decision(self, final_risk: float) -> str:
+    def _resolve_decision(self, final_risk: float) -> Decision:
         if final_risk >= 0.80:
-            return "block"
+            return Decision.BLOCK
         if final_risk >= 0.45:
-            return "interrogate"
-        return "pass"
+            return Decision.INTERROGATE
+        return Decision.PASS
 
     def _resolve_risk_level(self, final_risk: float) -> str:
         if final_risk >= 0.75:

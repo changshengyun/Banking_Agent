@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS risk_scene_knowledge (
     suggested_reply_examples_json TEXT NOT NULL,
     target_user_profile_json TEXT NOT NULL DEFAULT '[]',
     embedding_text TEXT NOT NULL,
+    vector_json TEXT,
     updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS risk_events (
@@ -181,6 +182,12 @@ def init_database() -> None:
             "risk_scene_knowledge",
             "target_user_profile_json",
             "target_user_profile_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        _ensure_column(
+            connection,
+            "risk_scene_knowledge",
+            "vector_json",
+            "vector_json TEXT",
         )
         _ensure_column(
             connection,

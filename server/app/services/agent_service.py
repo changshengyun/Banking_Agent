@@ -1,11 +1,29 @@
 ﻿from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..schemas.common import SuggestedAction, ToolUsage
+
+
+def _normalize(text: str) -> str:
+    return text.strip().lower().replace(" ", "")
+
+
+@dataclass(frozen=True)
+class SecondaryResult:
+    decision: str
+    risk: float
+    reasons: list[str]
+    assistant_message: str
+    semantic_red_flags: list[str]
+
+
 from .bank_host import BankHostService, get_bank_host_service
 from .llm_gateway import LLMGateway
+from .pii_masker import PiiMasker
+from .risk_engine import Decision
 from .risk_knowledge_base import (
     RiskKnowledgeBaseService,
     get_risk_knowledge_base_service,
@@ -65,7 +83,6 @@ GENERIC_EVASIVE_PATTERNS: tuple[str, ...] = (
 
 
 class AgentService:
-    # HIRD-R: 推理层，负责装配聊天与二次拦截所需的银行上下文、模型网关和风险知识库。
     def __init__(
         self,
         bank_host: BankHostService | None = None,
@@ -76,7 +93,6 @@ class AgentService:
         self.llm_gateway = llm_gateway or LLMGateway()
         self.risk_knowledge = risk_knowledge or get_risk_knowledge_base_service()
 
-    # HIRD-R: 推理层，负责为前台 AI 助手生成带银行上下文的对话回复。
     async def chat(self, request: ChatRequest) -> ChatResponse:
         latest_message = request.messages[-1].content.strip()
         self.bank_host.repository.add_chat_message(
@@ -97,7 +113,6 @@ class AgentService:
         )
         return response
 
-    # HIRD-R: 推理层，负责将风险分类、场景追问和用户解释组合成二次拦截判断输入。
     def evaluate_secondary_intercept(
         self,
         *,
@@ -108,7 +123,11 @@ class AgentService:
         matched_keywords: list[str],
         matched_scenarios: list[str],
         follow_up_questions: list[str],
-    ) -> tuple[str, float, list[str], str, list[str]]:
+    ) -> SecondaryResult:
+        # HIRD-G: 治理层，进入二次拦截逻辑前强制对摘要脱敏
+        semantic_summary = PiiMasker.mask_text(semantic_summary)
+        user_reply = PiiMasker.mask_text(user_reply)
+
         verification_points = self._secondary_verification_points(
             risk_category=risk_category,
             matched_scenarios=matched_scenarios,
@@ -123,12 +142,12 @@ class AgentService:
             risk_category=risk_category,
             verification_points=verification_points,
         ):
-            return (
-                "interrogate",
-                0.72,
-                ["用户回复未覆盖当前风险场景的关键核验点", "需要继续补充与风险问题直接相关的说明"],
-                "当前说明与核验问题不匹配，请继续补充与风险问题直接相关的解释。",
-                [],
+            return SecondaryResult(
+                decision=Decision.INTERROGATE,
+                risk=0.72,
+                reasons=["用户回复未覆盖当前风险场景的关键核验点", "需要继续补充与风险问题直接相关的说明"],
+                assistant_message="当前说明与核验问题不匹配，请继续补充与风险问题直接相关的解释。",
+                semantic_red_flags=[],
             )
 
         system_prompt = self._build_secondary_system_prompt()
@@ -147,18 +166,11 @@ class AgentService:
             user_prompt=user_prompt,
             temperature=0.1,
         )
-        (
-            decision,
-            risk,
-            reasons,
-            assistant_message,
-            llm_semantic_red_flags,
-        ) = self._parse_secondary_json(payload)
-        if llm_semantic_red_flags and decision != "block_secondary":
-            return self._build_red_flag_block_result(llm_semantic_red_flags)
-        return decision, risk, reasons, assistant_message, llm_semantic_red_flags
+        result = self._parse_secondary_json(payload)
+        if result.semantic_red_flags and result.decision != "block_secondary":
+            return self._build_red_flag_block_result(result.semantic_red_flags)
+        return result
 
-    # HIRD-R: 推理层，负责结合账户、账单与风险摘要生成在线聊天回复。
     async def _live_chat_response(
         self,
         *,
@@ -229,18 +241,16 @@ class AgentService:
             suggested_actions=suggested_actions,
         )
 
-    # HIRD-R: 推理层，负责构建二次拦截模型的系统规则，限定输出与核验原则。
     def _build_secondary_system_prompt(self) -> str:
         return (
             "你是手机银行二次拦截风控 Agent。"
-            "你只能输出 pass_secondary、interrogate 或 block_secondary 三种结果之一。"
+            f"你只能输出 {Decision.PASS_SECONDARY}、{Decision.INTERROGATE} 或 {Decision.BLOCK_SECONDARY} 三种结果之一。"
             "必须输出严格 JSON，不允许输出额外解释。"
-            "若用户回复出现高风险语义模式，必须输出 block_secondary。"
-            "若用户回复与当前追问框架无关，至少输出 interrogate，不得直接 pass_secondary。"
+            f"若用户回复出现高风险语义模式，必须输出 {Decision.BLOCK_SECONDARY}。"
+            f"若用户回复与当前追问框架无关，至少输出 {Decision.INTERROGATE}，不得直接 {Decision.PASS_SECONDARY}。"
             "必须围绕当前风险场景的强制核验点判断用户解释是否充分。"
         )
 
-    # HIRD-R: 推理层，负责把场景、追问框架和用户回复组装成二次拦截提示词。
     def _build_secondary_user_prompt(
         self,
         *,
@@ -256,7 +266,7 @@ class AgentService:
         return (
             "请根据预检摘要、风险分类、命中场景、追问框架和用户解释，判断本次转账是否允许继续。返回 JSON：\n"
             "{"
-            '"secondary_decision":"pass_secondary / interrogate / block_secondary",'
+            f'"secondary_decision":"{Decision.PASS_SECONDARY} / {Decision.INTERROGATE} / {Decision.BLOCK_SECONDARY}",'
             '"final_risk_after_secondary":0到1之间小数,'
             '"reasons":["原因1","原因2"],'
             '"assistant_message":"给用户的简短结论",'
@@ -273,7 +283,6 @@ class AgentService:
             f"用户二次解释：{user_reply.strip()}"
         )
 
-    # HIRD-R: 推理层，负责按风险类型生成当前轮二次质询必须覆盖的核验点。
     def _secondary_verification_points(
         self,
         *,
@@ -325,7 +334,6 @@ class AgentService:
         )
         return self._unique_strings(merged_checks)
 
-    # HIRD-I: 识别层，负责识别用户回复中的高风险语义模式。
     def _detect_semantic_red_flags(self, user_reply: str) -> list[str]:
         normalized_reply = self._normalize_text(user_reply)
         red_flags: list[str] = []
@@ -334,21 +342,19 @@ class AgentService:
                 red_flags.append(label)
         return self._unique_strings(red_flags)
 
-    # HIRD-R: 推理层，负责把命中的高风险语义模式直接转换为阻断结果。
     def _build_red_flag_block_result(
         self,
         semantic_red_flags: list[str],
-    ) -> tuple[str, float, list[str], str, list[str]]:
+    ) -> SecondaryResult:
         flags_text = "；".join(semantic_red_flags)
-        return (
-            "block_secondary",
-            0.98,
-            [f"命中高风险语义模式：{flags_text}", "用户说明已触发强制阻断规则"],
-            "检测到高风险语义信号，本次转账无法继续，请立即停止操作。",
-            semantic_red_flags,
+        return SecondaryResult(
+            decision=Decision.BLOCK_SECONDARY,
+            risk=0.98,
+            reasons=[f"命中高风险语义模式：{flags_text}", "用户说明已触发强制阻断规则"],
+            assistant_message="检测到高风险语义信号，本次转账无法继续，请立即停止操作。",
+            semantic_red_flags=semantic_red_flags,
         )
 
-    # HIRD-I: 识别层，负责判断用户回复是否与当前风险核验问题无关。
     def _is_irrelevant_reply(
         self,
         *,
@@ -370,7 +376,6 @@ class AgentService:
             return False
         return reply_tokens.isdisjoint(expected_tokens)
 
-    # HIRD-H: 感知层，负责从文本中提取用于规则匹配的关键词 token。
     def _extract_relevant_tokens(self, text: str) -> set[str]:
         keywords = {
             "公安",
@@ -412,11 +417,9 @@ class AgentService:
         normalized_text = self._normalize_text(text)
         return {keyword for keyword in keywords if self._normalize_text(keyword) in normalized_text}
 
-    # HIRD-H: 感知层，负责归一化文本，供规则和关键词匹配复用。
     def _normalize_text(self, text: str) -> str:
         return text.strip().lower().replace(" ", "")
 
-    # HIRD-R: 推理层，负责把模型返回的建议动作解析成前端可执行结构。
     def _parse_suggested_actions(self, actions_raw) -> list[SuggestedAction]:
         actions: list[SuggestedAction] = []
         if not isinstance(actions_raw, list):
@@ -431,13 +434,12 @@ class AgentService:
             actions.append(SuggestedAction(label=label, action=action))
         return actions
 
-    # HIRD-R: 推理层，负责校验并解析二次拦截模型输出的结构化 JSON。
     def _parse_secondary_json(
         self,
         payload: dict,
-    ) -> tuple[str, float, list[str], str, list[str]]:
+    ) -> SecondaryResult:
         decision = str(payload.get("secondary_decision", "")).strip()
-        if decision not in {"pass_secondary", "interrogate", "block_secondary"}:
+        if decision not in {Decision.PASS_SECONDARY, Decision.INTERROGATE, Decision.BLOCK_SECONDARY}:
             raise ValueError("二次校验返回缺少有效 secondary_decision。")
 
         try:
@@ -464,15 +466,14 @@ class AgentService:
         else:
             semantic_red_flags = []
 
-        return (
-            decision,
-            max(0.0, min(1.0, risk)),
-            reasons,
-            assistant_message,
-            semantic_red_flags,
+        return SecondaryResult(
+            decision=Decision(decision),
+            risk=max(0.0, min(1.0, risk)),
+            reasons=reasons,
+            assistant_message=assistant_message,
+            semantic_red_flags=semantic_red_flags,
         )
 
-    # HIRD-H: 感知层，负责清洗并去重候选字符串列表。
     def _unique_strings(self, values: list[str]) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
@@ -485,7 +486,7 @@ class AgentService:
         return result
 
 
-# HIRD-R: 推理层，负责提供 Agent 服务的单例入口。
+# 推理层，负责提供 Agent 服务的单例入口。
 @lru_cache(maxsize=1)
 def get_agent_service() -> AgentService:
     return AgentService()

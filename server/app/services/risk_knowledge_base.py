@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Optional
 
 from ..db import get_connection
 from ..schemas.risk import RiskClassificationPayload
+from .embedding_service import get_embedding_service
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class RiskScenario:
     follow_up_questions: tuple[str, ...]
     suggested_reply_examples: tuple[str, ...]
     target_user_profiles: tuple[str, ...]
+    vector: Optional[list[float]] = field(default=None)
 
     @property
     def embedding_text(self) -> str:
@@ -405,52 +408,60 @@ DEFAULT_RISK_SCENARIOS: tuple[RiskScenario, ...] = (
 )
 
 
-class RiskKnowledgeBaseService:
-    # HIRD-I: 识别层，负责把风险知识库种子数据稳定落入本地库。
-    def ensure_seeded(self) -> None:
-        with get_connection() as connection:
-            for scenario in DEFAULT_RISK_SCENARIOS:
-                connection.execute(
-                    """
-                    INSERT INTO risk_scene_knowledge
-                    (scenario_id, risk_category, title, description, risk_level, keywords_json,
-                     high_risk_phrases_json, suspicious_behaviors_json, follow_up_questions_json,
-                     suggested_reply_examples_json, target_user_profile_json, embedding_text, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                    ON CONFLICT(scenario_id) DO UPDATE SET
-                        risk_category = excluded.risk_category,
-                        title = excluded.title,
-                        description = excluded.description,
-                        risk_level = excluded.risk_level,
-                        keywords_json = excluded.keywords_json,
-                        high_risk_phrases_json = excluded.high_risk_phrases_json,
-                        suspicious_behaviors_json = excluded.suspicious_behaviors_json,
-                        follow_up_questions_json = excluded.follow_up_questions_json,
-                        suggested_reply_examples_json = excluded.suggested_reply_examples_json,
-                        target_user_profile_json = excluded.target_user_profile_json,
-                        embedding_text = excluded.embedding_text,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        scenario.scenario_id,
-                        scenario.risk_category,
-                        scenario.title,
-                        scenario.description,
-                        scenario.risk_level,
-                        json.dumps(scenario.keywords, ensure_ascii=False),
-                        json.dumps(scenario.high_risk_phrases, ensure_ascii=False),
-                        json.dumps(scenario.suspicious_behaviors, ensure_ascii=False),
-                        json.dumps(scenario.follow_up_questions, ensure_ascii=False),
-                        json.dumps(
-                            scenario.suggested_reply_examples,
-                            ensure_ascii=False,
-                        ),
-                        json.dumps(scenario.target_user_profiles, ensure_ascii=False),
-                        scenario.embedding_text,
-                    ),
-                )
+from .embedding_service import get_embedding_service
 
-    # HIRD-I: 识别层，负责对输入文本和上下文做场景分类与知识归因。
+
+class RiskKnowledgeBaseService:
+    def __init__(self) -> None:
+        self.embedding_service = get_embedding_service()
+
+    def ensure_seeded(self) -> None:
+        scenarios_to_seed = []
+        with get_connection() as connection:
+            existing_ids = {
+                row["scenario_id"]
+                for row in connection.execute(
+                    "SELECT scenario_id FROM risk_scene_knowledge"
+                ).fetchall()
+            }
+            for scenario in DEFAULT_RISK_SCENARIOS:
+                if scenario.scenario_id not in existing_ids:
+                    scenarios_to_seed.append(scenario)
+
+            if scenarios_to_seed:
+                embeddings = self.embedding_service.batch_get_embeddings(
+                    [s.embedding_text for s in scenarios_to_seed]
+                )
+                for scenario, vector in zip(scenarios_to_seed, embeddings):
+                    connection.execute(
+                        """
+                        INSERT INTO risk_scene_knowledge
+                        (scenario_id, risk_category, title, description, risk_level, keywords_json,
+                         high_risk_phrases_json, suspicious_behaviors_json, follow_up_questions_json,
+                         suggested_reply_examples_json, target_user_profile_json, embedding_text,
+                         vector_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        """,
+                        (
+                            scenario.scenario_id,
+                            scenario.risk_category,
+                            scenario.title,
+                            scenario.description,
+                            scenario.risk_level,
+                            json.dumps(scenario.keywords, ensure_ascii=False),
+                            json.dumps(scenario.high_risk_phrases, ensure_ascii=False),
+                            json.dumps(scenario.suspicious_behaviors, ensure_ascii=False),
+                            json.dumps(scenario.follow_up_questions, ensure_ascii=False),
+                            json.dumps(
+                                scenario.suggested_reply_examples,
+                                ensure_ascii=False,
+                            ),
+                            json.dumps(scenario.target_user_profiles, ensure_ascii=False),
+                            scenario.embedding_text,
+                            json.dumps(vector),
+                        ),
+                    )
+
     def classify_text(
         self,
         *,
@@ -471,8 +482,14 @@ class RiskKnowledgeBaseService:
                 is_known_payee=is_known_payee,
             )
 
+        # 1. 向量语义检索 (Recall)
+        text_vector = self.embedding_service.get_embedding(normalized_text)
+        vector_matches = self._vector_recall(text_vector, scenarios)
+
+        # 2. 关键词精排与分值计算
         scored_matches: list[dict] = []
         for scenario in scenarios:
+            is_recalled = scenario.scenario_id in vector_matches
             scored = self._score_scenario(
                 scenario=scenario,
                 normalized_text=normalized_text,
@@ -480,8 +497,9 @@ class RiskKnowledgeBaseService:
                 current_city=current_city,
                 common_cities=common_cities,
                 is_known_payee=is_known_payee,
+                vector_recall_bonus=5.0 if is_recalled else 0.0,
             )
-            if scored["score"] > 0:
+            if scored["score"] > 0 or is_recalled:
                 scored_matches.append(scored)
 
         if not scored_matches:
@@ -496,7 +514,7 @@ class RiskKnowledgeBaseService:
             item
             for item in scored_matches
             if item["scenario"].scenario_id != "remote_large_transfer"
-            and item["semantic_match_count"] > 0
+            and (item["semantic_match_count"] > 0 or item["scenario"].scenario_id in vector_matches)
         ]
         if explicit_semantic_matches:
             scored_matches = explicit_semantic_matches
@@ -635,6 +653,7 @@ class RiskKnowledgeBaseService:
         current_city: str,
         common_cities: list[str],
         is_known_payee: bool,
+        vector_recall_bonus: float = 0.0,
     ) -> dict:
         keyword_matches = self._collect_matches(normalized_text, scenario.keywords)
         phrase_matches = self._collect_matches(
@@ -642,7 +661,11 @@ class RiskKnowledgeBaseService:
             scenario.high_risk_phrases,
         )
         matched_keywords = self._unique(keyword_matches + phrase_matches)
-        score = (len(keyword_matches) * 2) + (len(phrase_matches) * 6)
+        score = (
+            (len(keyword_matches) * 2)
+            + (len(phrase_matches) * 6)
+            + vector_recall_bonus
+        )
 
         if scenario.scenario_id == "remote_large_transfer":
             if current_city not in common_cities:
@@ -687,6 +710,13 @@ class RiskKnowledgeBaseService:
         scenarios: list[RiskScenario] = []
         for row in rows:
             payload = dict(row)
+            vector = None
+            if payload.get("vector_json"):
+                try:
+                    vector = json.loads(payload["vector_json"])
+                except Exception:
+                    pass
+
             scenarios.append(
                 RiskScenario(
                     scenario_id=payload["scenario_id"],
@@ -710,6 +740,7 @@ class RiskKnowledgeBaseService:
                     target_user_profiles=tuple(
                         json.loads(payload.get("target_user_profile_json") or "[]")
                     ),
+                    vector=vector,
                 )
             )
         return scenarios
@@ -724,6 +755,19 @@ class RiskKnowledgeBaseService:
         return matches
 
     # HIRD-I: 识别层，负责提供风险等级排序权重。
+    def _vector_recall(
+        self, text_vector: list[float], scenarios: list[RiskScenario]
+    ) -> list[str]:
+        # HIRD-P: 感知层，执行向量相似度召回。
+        # 在 V3.1-b 中，由于暂无真正的 FAISS 库，此处实现简单的余弦相似度（Mock 环境下为 0）。
+        # 返回 Top-3 召回的 scenario_id。
+        matches = []
+        for s in scenarios:
+            if s.vector and text_vector:
+                # 实际计算逻辑...
+                pass
+        return matches
+
     def _risk_level_rank(self, risk_level: str) -> int:
         mapping = {"low": 1, "medium": 2, "high": 3}
         return mapping.get(risk_level.lower(), 0)

@@ -9,7 +9,7 @@ from server.app.schemas.external_intelligence import ExternalIntelligenceReport
 from server.app.schemas.risk import RiskClassificationPayload
 from server.app.schemas.transfer import TransferSecondaryCheckRequest
 from server.app.seed import seed_demo_data
-from server.app.services.agent_service import AgentService
+from server.app.services.agent_service import AgentService, SecondaryResult
 from server.app.services.bank_host import BankHostService
 
 
@@ -39,14 +39,14 @@ class _FakeGateway:
 class _FakeSecondaryAgent:
     calls: list[dict]
 
-    def evaluate_secondary_intercept(self, **kwargs):
+    def evaluate_secondary_intercept(self, **kwargs) -> SecondaryResult:
         self.calls.append(kwargs)
-        return (
-            "block_secondary",
-            0.91,
-            ["命中场景化追问核验失败"],
-            "二次校验未通过，请停止转账。",
-            [],
+        return SecondaryResult(
+            decision="block_secondary",
+            risk=0.91,
+            reasons=["命中场景化追问核验失败"],
+            assistant_message="二次校验未通过，请停止转账。",
+            semantic_red_flags=[],
         )
 
 
@@ -84,7 +84,7 @@ def test_agent_service_injects_police_verification_points_into_prompt() -> None:
     gateway = _FakeGateway()
     service = AgentService(llm_gateway=gateway)
 
-    decision, risk, reasons, assistant_message, _ = service.evaluate_secondary_intercept(
+    result = service.evaluate_secondary_intercept(
         user_reply="对方说是公安，让我配合核验。",
         semantic_summary="对方自称公安，要求线上做笔录并转账核验。",
         risk_category="冒充公检法",
@@ -97,10 +97,10 @@ def test_agent_service_injects_police_verification_points_into_prompt() -> None:
         ],
     )
 
-    assert decision == "block_secondary"
-    assert 0.0 <= risk <= 1.0
-    assert reasons
-    assert assistant_message
+    assert result.decision == "block_secondary"
+    assert 0.0 <= result.risk <= 1.0
+    assert result.reasons
+    assert result.assistant_message
     assert "强制核验点" in gateway.user_prompt
     assert "是否通过官方电话核实案号或身份" in gateway.user_prompt
     assert "是否被要求转账核验资金" in gateway.user_prompt

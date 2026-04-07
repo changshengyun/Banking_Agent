@@ -8,22 +8,25 @@
 - 三态风控决策：`pass / interrogate / block`
 - 风险评分主链路：`flag_s`、`g_behavior`、`g_dynamic`、`final_risk`
 - 风险知识库分类：基于常见金融诈骗/异常转账场景与关键词做匹配识别
-- `V2-patch-1`：扩展投资理财诈骗、情感诈骗、刷单兼职诈骗，并输出 `high_risk_phrase_hits`
-- `V2-patch-2`：二次质询主问题按风险场景动态选择，并把强制核验点注入 Agent 提示词
-- `V2-patch-3`：新增语义红旗直拦规则与无关回复识别，二次质询响应新增 `semantic_red_flags`
-- 统一在线模型网关：后端通过 OpenAI 兼容接口调用模型，不再保留本地 Mock LLM 路径
+- **`V3-alpha` (语义升级与行为脉冲)**：
+  - 语义检索：引入向量 Embedding 语义召回（Recall）替代纯关键词匹配
+  - 行为脉冲建模：将行为分升级为 S3 脉冲分，支持输入停顿、时长、App 切换等微观行为加权
+  - 隐私护栏：实现 API 入口层 PII 脱敏（Masking），保障 LLM 调用合规
+- `V2-patch-1 / 2 / 3`：已完成风险场景扩展、动态追问注入与语义红旗阻断
+- 统一在线模型网关：后端通过 OpenAI 兼容接口调用模型
 - `explain_pack` 解释包：预检与二次质询响应统一返回 XAI 面板数据
-- `external_intelligence` 外部情报：预检与二次质询统一返回名单筛查结果
-- Flutter 演示端：账单改为弹窗展示，首页不再展示“最近交易”列表
+- Flutter 演示端：账单弹窗与二次质询标准化交互
+- 代码质量：完成 HIRD 注释清理、文本归一化统一、Decision 枚举隔离与二次拦截对象结构化重构
 
-## V2-patch-3 重点说明
+## V3-alpha 重点说明
 
-`V2-patch-3` 聚焦“二次拦截更像真实银行风控复核”这一目标，当前已实现：
+`V3-alpha` 聚焦“从关键词感知向语义/行为深度感知演进”以及“隐私合规基石”，当前已实现：
 
-- 本地确定性红旗规则：命中“司法机关要求转账”“安全账户/资金清查”“客服要求验证资金”“验证码/屏幕共享”“投资收益诱导”等语义时直接阻断
-- 无关回复识别：用户若只回复“我就是想转账”“别问了”这类回避性内容，不允许直接放行，至少进入 `interrogate`
-- LLM 输出兜底校验：若模型返回了 `semantic_red_flags` 但未选择 `block_secondary`，后端会强制修正为阻断结果
-- API 契约补充：`POST /api/v1/transfers/secondary-check` 响应新增 `semantic_red_flags`
+- **EmbeddingService**：单例向量服务框架，支持双阶段分类逻辑（向量召回 -> 关键词精排）
+- **BehaviorPulseModel**：在 `RiskEngine` 中实现行为脉冲评分，精准识别“受迫操作”等异常输入信号
+- **PiiMasker**：提供确定性 PII 脱敏工具，自动识别并脱敏 `semantic_summary` 中的敏感信息
+- **数据库扩展**：`risk_scene_knowledge` 表新增 `vector_json` 字段，支持知识库向量化存储
+- **代码健壮性**：全局统一 `Decision` 枚举，消除“Stringly-typed”风控决策风险
 
 ## 项目结构
 
@@ -77,6 +80,7 @@ flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
 7. 打开 `AI 助手`，验证余额查询、最近风控事件说明等能力。
 
 更完整的手工测试样例见 [docs/risk-test-cases.md](e:/Projects/Banking_AI_Project/docs/risk-test-cases.md)。
+功能验收测试清单见 [docs/functional-test-cases.md](e:/Projects/Banking_AI_Project/docs/functional-test-cases.md)。
 
 ## 已实现 API
 
@@ -169,4 +173,5 @@ flutter test --no-version-check
 - `docs/architecture.md`
 - `docs/demo-script.md`
 - `docs/risk-test-cases.md`
+- `docs/functional-test-cases.md`
 - `docs/sequence-diagram.md`

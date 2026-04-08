@@ -149,6 +149,116 @@ void main() {
     expect(apiClient.confirmCallCount, 0);
   });
 
+  testWidgets('shows busy hint for delayed secondary-check', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      secondaryDelay: const Duration(milliseconds: 2200),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '这是朋友之间的正常还款。');
+    await tester.tap(find.text('提交校验'));
+    await tester.pump(const Duration(milliseconds: 1200));
+
+    expect(find.textContaining('二次校验 处理中'), findsOneWidget);
+    expect(apiClient.secondaryCallCount, 1);
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
+  testWidgets('shows long-wait hint after 10s for delayed secondary-check', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      secondaryDelay: const Duration(seconds: 11),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '关系明确，用途明确，不涉及验证码。');
+    await tester.tap(find.text('提交校验'));
+    await tester.pump(const Duration(milliseconds: 10300));
+
+    expect(find.textContaining('仍在等待模型/服务响应'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
+  testWidgets('shows busy hint for delayed confirm', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      precheckResponse: const TransferPrecheckResult(
+        decision: 'pass',
+        riskLevel: 'low',
+        flagS: 0.1,
+        gBehavior: 0.1,
+        gDynamic: 0.1,
+        finalRisk: 0.1,
+        reasons: <String>['normal transfer'],
+        confirmationToken: 'confirm-demo',
+        assistantMessage: '可继续转账。',
+        riskClassification: RiskClassificationData(
+          riskCategory: 'normal_transfer',
+          riskLevel: 'low',
+          blockHint: false,
+          matchedKeywords: <String>['normal'],
+          matchedScenarios: <String>['normal_transfer'],
+          analysis: 'normal transfer',
+          followUpQuestions: <String>[],
+          suggestedReplyExamples: <String>[],
+        ),
+      ),
+      confirmDelay: const Duration(milliseconds: 2200),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pump(const Duration(milliseconds: 1200));
+
+    expect(find.textContaining('确认转账 处理中'), findsOneWidget);
+    expect(apiClient.confirmCallCount, 1);
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
+  testWidgets('shows busy hint for delayed cancel', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      cancelDelay: const Duration(milliseconds: 2200),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消交易'));
+    await tester.pump(const Duration(milliseconds: 1200));
+
+    expect(find.textContaining('取消交易 处理中'), findsOneWidget);
+    expect(apiClient.cancelCallCount, 1);
+    await tester.pump(const Duration(milliseconds: 1500));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
   mainDataContractTests();
 }
 
@@ -260,6 +370,7 @@ void mainDataContractTests() {
 
 class _FakeApiClient implements BankingApiClient {
   _FakeApiClient({
+    this.precheckResponse,
     this.secondaryResponse = const TransferSecondaryCheckResult(
       secondaryDecision: 'pass_secondary',
       reasons: <String>['user explanation looks reasonable'],
@@ -296,11 +407,20 @@ class _FakeApiClient implements BankingApiClient {
         ],
       ),
     ),
+    this.secondaryDelay = Duration.zero,
+    this.confirmDelay = Duration.zero,
+    this.cancelDelay = Duration.zero,
   });
 
+  final TransferPrecheckResult? precheckResponse;
   final TransferSecondaryCheckResult secondaryResponse;
+  final Duration secondaryDelay;
+  final Duration confirmDelay;
+  final Duration cancelDelay;
   bool cancelCalled = false;
   int confirmCallCount = 0;
+  int secondaryCallCount = 0;
+  int cancelCallCount = 0;
 
   @override
   Future<ChatReply> chat({
@@ -321,6 +441,9 @@ class _FakeApiClient implements BankingApiClient {
   @override
   Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
     confirmCallCount += 1;
+    if (confirmDelay > Duration.zero) {
+      await Future<void>.delayed(confirmDelay);
+    }
     return TransferConfirmResult(
       success: true,
       assistantMessage: 'Transfer completed.',
@@ -344,6 +467,10 @@ class _FakeApiClient implements BankingApiClient {
   @override
   Future<TransferCancelResult> cancelTransfer(String confirmationToken) async {
     cancelCalled = true;
+    cancelCallCount += 1;
+    if (cancelDelay > Duration.zero) {
+      await Future<void>.delayed(cancelDelay);
+    }
     return TransferCancelResult(
       success: true,
       status: 'cancelled',
@@ -408,6 +535,9 @@ class _FakeApiClient implements BankingApiClient {
     required double amount,
     required ClientContextData context,
   }) async {
+    if (precheckResponse != null) {
+      return precheckResponse!;
+    }
     return const TransferPrecheckResult(
       decision: 'interrogate',
       riskLevel: 'high',
@@ -494,6 +624,10 @@ class _FakeApiClient implements BankingApiClient {
     required String userReply,
     required ClientContextData context,
   }) async {
+    secondaryCallCount += 1;
+    if (secondaryDelay > Duration.zero) {
+      await Future<void>.delayed(secondaryDelay);
+    }
     return secondaryResponse;
   }
 }

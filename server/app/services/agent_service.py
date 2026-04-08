@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import time
 
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..schemas.common import SuggestedAction, ToolUsage
 
+
+from ..utils import nlp_utils
 
 @dataclass(frozen=True)
 class SecondaryResult:
@@ -14,6 +17,8 @@ class SecondaryResult:
     reasons: list[str]
     assistant_message: str
     semantic_red_flags: list[str]
+    used_llm: bool = False
+    llm_elapsed_ms: float | None = None
     domain_output: dict[str, object] | None = None
     deep_output: dict[str, object] | None = None
     semantic_output: dict[str, object] | None = None
@@ -94,6 +99,40 @@ NEGATION_CUES: tuple[str, ...] = (
     "无需",
     "不用",
     "不要",
+)
+
+CLAUSE_DELIMITERS: tuple[str, ...] = (
+    "，",
+    ",",
+    "；",
+    ";",
+    "。",
+    "！",
+    "!",
+    "？",
+    "?",
+    "\n",
+    "\r",
+    "\t",
+)
+
+SENTENCE_DELIMITERS: tuple[str, ...] = (
+    "。",
+    "！",
+    "!",
+    "？",
+    "?",
+    "\n",
+    "\r",
+)
+
+CONTRAST_CUES: tuple[str, ...] = (
+    "但是",
+    "但",
+    "不过",
+    "然而",
+    "而是",
+    "却",
 )
 
 LOW_RISK_RELATION_TERMS: tuple[str, ...] = (
@@ -236,6 +275,7 @@ class AgentService:
             )
 
         try:
+            llm_started_at = time.perf_counter()
             payload = self.llm_gateway.generate_json_sync(
                 system_prompt=self._build_secondary_system_prompt(),
                 user_prompt=self._build_secondary_user_prompt(
@@ -250,8 +290,10 @@ class AgentService:
                 ),
                 temperature=0.1,
             )
+            llm_elapsed_ms = (time.perf_counter() - llm_started_at) * 1000
             parsed = self._parse_secondary_json(payload)
         except ValueError:
+            llm_elapsed_ms = (time.perf_counter() - llm_started_at) * 1000
             return self._build_llm_unavailable_result(
                 user_reply=user_reply,
                 risk_category=risk_category,
@@ -260,6 +302,8 @@ class AgentService:
                 matched_scenarios=matched_scenarios,
                 follow_up_questions=follow_up_questions,
                 verification_points=verification_points,
+                used_llm=True,
+                llm_elapsed_ms=llm_elapsed_ms,
             )
         if parsed["semantic_red_flags"] and parsed["decision"] != Decision.BLOCK_SECONDARY:
             return self._build_red_flag_block_result(
@@ -286,6 +330,8 @@ class AgentService:
             reasons=parsed["reasons"],
             assistant_message=parsed["assistant_message"],
             semantic_red_flags=parsed["semantic_red_flags"],
+            used_llm=True,
+            llm_elapsed_ms=round(llm_elapsed_ms, 2),
             **outputs,
         )
 
@@ -503,7 +549,10 @@ class AgentService:
         normalized_reply = self._normalize_text(user_reply)
         red_flags: list[str] = []
         for label, phrases in SEMANTIC_RED_FLAG_RULES.items():
-            if any(self._contains_affirmative_phrase(normalized_reply, phrase) for phrase in phrases):
+            if any(
+                self._contains_affirmative_phrase(normalized_reply, phrase)
+                for phrase in phrases
+            ):
                 red_flags.append(label)
         return self._unique_strings(red_flags)
 
@@ -549,6 +598,8 @@ class AgentService:
         matched_scenarios: list[str],
         follow_up_questions: list[str],
         verification_points: list[str],
+        used_llm: bool = False,
+        llm_elapsed_ms: float | None = None,
     ) -> SecondaryResult:
         if self._looks_like_low_risk_explanation(user_reply):
             local_pass = self._build_local_low_risk_result(
@@ -561,7 +612,18 @@ class AgentService:
                 verification_points=verification_points,
             )
             if local_pass is not None:
-                return local_pass
+                return SecondaryResult(
+                    decision=local_pass.decision,
+                    risk=local_pass.risk,
+                    reasons=local_pass.reasons,
+                    assistant_message=local_pass.assistant_message,
+                    semantic_red_flags=local_pass.semantic_red_flags,
+                    used_llm=used_llm,
+                    llm_elapsed_ms=round(llm_elapsed_ms, 2) if llm_elapsed_ms is not None else None,
+                    domain_output=local_pass.domain_output,
+                    deep_output=local_pass.deep_output,
+                    semantic_output=local_pass.semantic_output,
+                )
         outputs = self._build_agent_outputs(
             risk_category=risk_category,
             risk_level=risk_level,
@@ -578,6 +640,8 @@ class AgentService:
             reasons=["在线语义服务暂不可用，当前说明未达到自动放行条件。"],
             assistant_message="系统正在忙，请稍后重试或取消交易后重新发起。",
             semantic_red_flags=[],
+            used_llm=used_llm,
+            llm_elapsed_ms=round(llm_elapsed_ms, 2) if llm_elapsed_ms is not None else None,
             **outputs,
         )
 
@@ -601,22 +665,39 @@ class AgentService:
         return relation_hits > 0 and purpose_hits > 0 and negated_high_risk_hits > 0
 
     def _contains_affirmative_phrase(self, normalized_reply: str, phrase: str) -> bool:
-        normalized_phrase = self._normalize_text(phrase)
-        for start in self._find_phrase_positions(normalized_reply, normalized_phrase):
-            if not self._is_negated_occurrence(
-                text=normalized_reply, start=start, phrase=normalized_phrase
-            ):
-                return True
-        return False
+        affirmative_sentences, negated_sentences = self._sentence_polarity(
+            text=normalized_reply,
+            phrase=phrase,
+        )
+        return bool(affirmative_sentences - negated_sentences)
 
     def _contains_negated_phrase(self, normalized_reply: str, phrase: str) -> bool:
+        _, negated_sentences = self._sentence_polarity(
+            text=normalized_reply,
+            phrase=phrase,
+        )
+        return bool(negated_sentences)
+
+    def _sentence_polarity(
+        self,
+        *,
+        text: str,
+        phrase: str,
+    ) -> tuple[set[int], set[int]]:
+        affirmative_sentences: set[int] = set()
+        negated_sentences: set[int] = set()
         normalized_phrase = self._normalize_text(phrase)
-        for start in self._find_phrase_positions(normalized_reply, normalized_phrase):
+        for start in self._find_phrase_positions(text, normalized_phrase):
+            sentence_start, _ = self._sentence_span(text=text, start=start)
             if self._is_negated_occurrence(
-                text=normalized_reply, start=start, phrase=normalized_phrase
+                text=text,
+                start=start,
+                phrase=normalized_phrase,
             ):
-                return True
-        return False
+                negated_sentences.add(sentence_start)
+            else:
+                affirmative_sentences.add(sentence_start)
+        return affirmative_sentences, negated_sentences
 
     def _find_phrase_positions(self, text: str, phrase: str) -> list[int]:
         positions: list[int] = []
@@ -632,11 +713,41 @@ class AgentService:
         return positions
 
     def _is_negated_occurrence(self, *, text: str, start: int, phrase: str) -> bool:
-        left_window = text[max(0, start - 24):start]
-        right_window = text[start + len(phrase): start + len(phrase) + 8]
-        return any(cue in left_window for cue in NEGATION_CUES) or any(
-            right_window.startswith(cue) for cue in ("没有", "没", "未", "不")
+        clause_start, clause_end = self._clause_span(text=text, start=start)
+        left_clause = text[clause_start:start]
+        right_clause = text[start + len(phrase):clause_end]
+        negation_scope = left_clause[-12:]
+        if any(cue in negation_scope for cue in CONTRAST_CUES):
+            return False
+        return any(cue in negation_scope for cue in NEGATION_CUES) or any(
+            right_clause.startswith(cue) for cue in ("没有", "没", "未", "不")
         )
+
+    def _clause_span(self, *, text: str, start: int) -> tuple[int, int]:
+        left = 0
+        for index in range(start - 1, -1, -1):
+            if text[index] in CLAUSE_DELIMITERS:
+                left = index + 1
+                break
+        right = len(text)
+        for index in range(start, len(text)):
+            if text[index] in CLAUSE_DELIMITERS:
+                right = index
+                break
+        return left, right
+
+    def _sentence_span(self, *, text: str, start: int) -> tuple[int, int]:
+        left = 0
+        for index in range(start - 1, -1, -1):
+            if text[index] in SENTENCE_DELIMITERS:
+                left = index + 1
+                break
+        right = len(text)
+        for index in range(start, len(text)):
+            if text[index] in SENTENCE_DELIMITERS:
+                right = index
+                break
+        return left, right
 
     def _build_red_flag_block_result(
         self,

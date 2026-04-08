@@ -5,60 +5,55 @@
 
 ## 1. 当前完整度评估
 
-### 验证基线
-- 后端核心回归：当前 V3-alpha 基线已通过，后续以 `plan.md` 中的 V3-beta 回归集合为准。
-- 前端静态检查：`flutter analyze` 已通过。
-- 前端关键交互：`widget_test.dart` 已通过。
+### 验证基线（最新实测）
+- 后端核心回归：`55 passed`
+- 前端自动化：`widget_test.dart` 全通过（14/14），`flutter analyze` 通过
 - 本地性能基线：
-  - `precheck avg 29.66ms / p95 80.60ms`
-  - `secondary-check avg 43.99ms / p95 108.76ms`
+  - `precheck cold_start avg/p95 = 39.63ms`
+  - `precheck warm_path avg = 31.43ms / p95 = 42.34ms`
+  - `secondary-check cold_start avg/p95 = 178.37ms`
+  - `secondary-check warm_path avg = 61.56ms / p95 = 111.77ms`
+- LLM 基准状态：
+  - isolated LLM path benchmark：`status=ok`，`avg 5403.69ms / p95 5905.08ms`
+  - precheck all-Agent shadow benchmark：`status=ok`，`avg 2282.41ms / p95 2530.10ms / drift 0.0`
 
 ### 功能完整度
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 预检风控主链路 | 已完成 | `pass / interrogate / block` 已稳定 |
+| 预检风控主链路 | 已完成 | `pass / interrogate / block` 稳定 |
 | 二次质询单轮策略 | 已完成 | 同 token 单轮一次提交，未通过不可确认 |
 | 显式取消交易 | 已完成 | `POST /api/v1/transfers/cancel` 已打通 |
-| 三类 Agent 分工 | 已完成 | 初分 / 细分 / 语义分析职责已固化 |
-| 语义否定识别 | 已完成 | 已支持“不涉及验证码/安全账户/屏幕共享” |
-| Trace 审计能力 | 进行中 | 已具备事件链基础，V3-beta 补全审计闭环 |
-| MCP 审计查询 | 进行中 | V3-beta 作为正式能力补齐 |
-| 感知层全能力 | 未完成 | 作为 V4 主线 |
-| 治理层完善与风险报告 | 未完成 | 作为 V5 主线 |
+| 三类 Agent 分工 | 已完成 | 初分 / 细分 / 语义分析职责固化 |
+| 语义否定识别 | 已完成 | 已支持否定句冲突消解 |
+| Trace 审计能力 | 已完成 | 事件链与最小时延字段已稳定 |
+| MCP 审计查询 | 已完成 | `get_transfer_trace / list_transfer_traces` 可用 |
+| 感知层全能力 | 进行中 | 作为 `V4 / Phase-1` 主线 |
+| 治理层完善与风险报告 | 未开始 | 作为 `V5` 主线 |
 
 ### 当前结论
-- 当前代码可视为 `V3-alpha 可交付版本`。
-- 下一阶段不是切编排框架，而是进入 `V3-beta`：
-  - 统一取消交易全链路
-  - 取消链路指标化
-  - Trace 审计落库并通过 MCP 暴露
+- `V3-beta` 已收口完成并通过验收，已满足进入 `V4` 条件。
+- 当前执行主线已切换为：`V4 / Phase-1（感知层能力建设）`。
 
 ## 2. 当前架构快照
 
 ### HIRD-H 感知集成层
 - 输入：`ClientContext`、交易金额、收款人、设备/城市/页面行为。
 - 现状：已接入上下文、外部情报、基础行为信号。
-- 下一步：V4 补齐更完整的多模态感知与外部 MCP 工具编排。
+- 下一步：V4 补齐 MCP 感知能力与字段契约冻结。
 
 ### HIRD-C/R 认知决策层
 - `RiskKnowledgeBase`：场景检索、关键词/高危短语、`c_match`。
 - `AgentService`：二次质询语义分析、红旗识别、`secondary_risk`。
-- 三类 Agent 职责固定：
-  - 领域初分
-  - 领域细分
-  - 语义分析
+- 三类 Agent 职责固定：领域初分、领域细分、语义分析。
 
 ### HIRD-G 治理控制层
 - `RiskEngine`：执行 `w_adj / f_final` 主公式和阈值路由。
 - 规则优先于 Agent 建议。
-- V3-beta 将补齐 Trace 审计存储与 MCP 查询能力。
+- 审计链路独立，Trace 可经 MCP 查询。
 
 ### HIRD-E 业务执行层
-- 当前业务动作：
-  - `confirm`
-  - `cancel`
-  - `secondary-check`
-- 取消交易当前已是显式动作，V3-beta 继续统一全链路状态边界和审计指标。
+- 当前业务动作：`confirm / cancel / secondary-check`。
+- 取消交易是显式业务动作，不与关闭弹窗混淆。
 
 ## 3. 版本总览
 
@@ -66,77 +61,39 @@
 |---|---|---|---|
 | V1 | 初版规则风控闭环 | 已归档 | 规则预检 + 基础拦截 |
 | V2 | 场景扩展与 explain_pack | 已完成 | 风险场景扩容、解释面板稳定 |
-| V3-alpha | 交互治理收口 + 三类 Agent + 单轮二次质询 | 当前版本 | 已完成主链路闭环 |
-| V3-beta | 取消交易全链路统一 + 指标化 + Trace 审计入 MCP | 执行中 | 当前开发目标 |
-| V4 | 完善 MCP 感知层全部能力 | 规划中 | 多模态信号与外部情报标准化 |
+| V3-alpha | 交互治理收口 + 三类 Agent + 单轮二次质询 | 已完成 | 主链路闭环完成 |
+| V3-beta | 取消交易全链路统一 + 指标化 + Trace 审计入 MCP + 性能/真实 LLM/等待体验收口 | 已完成 | 验收通过 |
+| V4 / Phase-1 | 完善 MCP 感知层能力与字段契约 | 进行中 | 仅感知层，不扩治理层 |
 | V5 | 完善治理层 + 初版风险报告 Agent | 规划中 | 规则完善、报告生成、人工复核支持 |
 
-## 4. V3-alpha 状态
+## 4. V3-beta 收口结果
 
-### 已完成能力
-1. 风控闭环稳定：
-   - `precheck -> secondary-check -> confirm/cancel`
-   - 决策语义：`pass / interrogate / block / pass_secondary / block_secondary`
-2. 数学模型落地：
-   - `w_base = 0.3`
-   - `w_adj = w_base + (1 - w_base) * c_match`
-   - `f_final = (1 - w_adj) * s_static + w_adj * s_dev`
-3. 三类 Agent 职责已落地：
-   - 初分负责场景定性
-   - 细分负责剧本命中
-   - 语义分析负责红旗和解释充分性
-4. 交互治理完成：
-   - 无效输入统一文案
-   - 取消交易显式入口
-   - 单轮二次质询
-5. 语义识别增强：
-   - 已支持否定语义识别
-   - LLM 不可用时保留降级策略
+### 已完成项
+1. 全链路稳定：`precheck -> secondary-check -> confirm/cancel`。
+2. 单轮二次质询：一次提交、非 `pass_secondary` 不可确认。
+3. 取消交易闭环：`pending -> cancelled` 语义稳定。
+4. 性能/基准/真实 LLM/shadow benchmark 全部可跑并达标。
+5. 前端等待态、防重复提交、长等待提示已通过自动化验证。
 
-### 当前遗留
-- Trace 还没有形成完整审计闭环与标准查询视图。
-- 取消交易还缺少统一链路指标口径。
-- LLM 路径仍缺独立时延采样。
+### 关闭判断
+- 收口结论：`Closed`
+- V4 准入：`Go`
 
-## 5. V3-beta 里程碑
+## 5. V4 / Phase-1 路线
 
-### 目标
-- 统一取消交易全链路步骤与状态边界。
-- 为取消链路增加审计与指标字段。
-- 新增 `trace_events`，沉淀最小审计事件集合。
-- 通过 MCP 暴露 `get_transfer_trace / list_transfer_traces`。
-- 保持 `precheck` 继续走知识库+规则引擎，不切成 mandatory Agent。
+- 感知输入字段冻结与向后兼容扩展策略。
+- MCP 感知能力补齐（超时、降级、失败分类）。
+- 感知层数据流与可观测字段统一到 `nowthink.md` / `math.md`。
 
-### 当前约束
-- 不改变现有 REST 接口语义。
-- 不新增新的决策枚举。
-- 不让 MCP 变成数据库本体，MCP 只提供审计访问能力。
-- 不把 `precheck` 切成全量 Agent 热路径。
-
-## 6. V4 路线
-
-- 完整接入并标准化多模态感知信号：
-  - 输入停顿
-  - 切屏
-  - 粘贴
-  - 设备上下文
-  - 行为脉冲
-- 完善外部 MCP 工具接入：
-  - 调用协议
-  - 超时/降级
-  - 可观测字段
-- 固化感知层 I/O 契约，确保上层 Agent 稳定消费。
-
-## 7. V5 路线
+## 6. V5 路线
 
 - 完善治理层规则编排和拒绝口径一致性。
 - 增加初版风险报告 Agent：
-  - 汇总当前风险因子
+  - 汇总风险因子
   - 输出结构化风险摘要
   - 给出建议动作
-- 打通人工复核的最小闭环。
 
-## 8. 文档导航
+## 7. 文档导航
 
 - `README.md`：项目总入口与启动/验证说明
 - `plan.md`：当前唯一执行计划
@@ -147,5 +104,5 @@
 ---
 
 更新日期：2026-04-08  
-当前主版本：`V3-alpha`  
-当前开发目标：`V3-beta`
+当前主版本：`V4 / Phase-1（进行中）`  
+上一版本状态：`V3-beta（已收口完成）`

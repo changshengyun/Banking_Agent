@@ -53,6 +53,7 @@ class Settings:
     llm_model: str
     llm_api_name: str
     llm_timeout_seconds: float
+    llm_benchmark_timeout_seconds: float
     mcp_bank_enabled: bool
 
 
@@ -89,6 +90,10 @@ def load_settings() -> Settings:
         ),
         llm_api_name=_get_first_non_empty("LLM_API_NAME", "ARK_API_NAME"),
         llm_timeout_seconds=_get_float("LLM_TIMEOUT_SECONDS", 2.0),
+        llm_benchmark_timeout_seconds=_get_float(
+            "LLM_BENCHMARK_TIMEOUT_SECONDS",
+            30.0,
+        ),
         mcp_bank_enabled=_get_bool("MCP_BANK_ENABLED", True),
     )
 

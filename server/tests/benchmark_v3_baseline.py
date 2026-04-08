@@ -44,32 +44,50 @@ def _build_context(*, session_id: str, city: str, semantic_summary: str) -> dict
 
 
 def run_precheck_benchmark(*, client: TestClient, rounds: int = 50) -> dict[str, float]:
-    timings: list[float] = []
-    for idx in range(rounds):
-        payload = {
-            "payee_name": "小b",
-            "amount": 300,
-            "context": _build_context(
-                session_id=f"bench-precheck-{idx}",
-                city="上海",
-                semantic_summary="收款人是我朋友，这次是还款，不涉及验证码、安全账户或屏幕共享。",
-            ),
-        }
+    payloads = []
+    for idx in range(rounds + 1):
+        payloads.append(
+            {
+                "payee_name": "小b",
+                "amount": 300,
+                "context": _build_context(
+                    session_id=f"bench-precheck-{idx}",
+                    city="上海",
+                    semantic_summary="收款人是我朋友，这次是还款，不涉及验证码、安全账户或屏幕共享。",
+                ),
+            }
+        )
+
+    cold_start_timing_ms = 0.0
+    warm_timings: list[float] = []
+    for idx, payload in enumerate(payloads):
         start = time.perf_counter()
         response = client.post("/api/v1/transfers/precheck", json=payload)
         elapsed_ms = (time.perf_counter() - start) * 1000
         assert response.status_code == 200
-        timings.append(elapsed_ms)
+        if idx == 0:
+            cold_start_timing_ms = elapsed_ms
+        else:
+            warm_timings.append(elapsed_ms)
     return {
-        "avg_ms": round(mean(timings), 2),
-        "p95_ms": round(_percentile(timings, 0.95), 2),
+        "cold_start": {
+            "avg_ms": round(cold_start_timing_ms, 2),
+            "p95_ms": round(cold_start_timing_ms, 2),
+            "rounds": 1,
+        },
+        "warm_path": {
+            "avg_ms": round(mean(warm_timings), 2),
+            "p95_ms": round(_percentile(warm_timings, 0.95), 2),
+            "rounds": len(warm_timings),
+        },
     }
 
 
-def run_secondary_benchmark(*, client: TestClient, rounds: int = 30) -> dict[str, float]:
-    timings: list[float] = []
-    for idx in range(rounds):
-        precheck_payload = {
+def run_secondary_benchmark(*, client: TestClient, rounds: int = 30) -> dict[str, dict[str, float]]:
+    cold_start_timing_ms = 0.0
+    warm_timings: list[float] = []
+    for idx in range(rounds + 1):
+        payload = {
             "payee_name": "小c",
             "amount": 8000,
             "context": _build_context(
@@ -78,7 +96,7 @@ def run_secondary_benchmark(*, client: TestClient, rounds: int = 30) -> dict[str
                 semantic_summary="普通转账需求。",
             ),
         }
-        precheck = client.post("/api/v1/transfers/precheck", json=precheck_payload)
+        precheck = client.post("/api/v1/transfers/precheck", json=payload)
         assert precheck.status_code == 200
         token = precheck.json()["confirmation_token"]
         secondary_payload = {
@@ -98,10 +116,21 @@ def run_secondary_benchmark(*, client: TestClient, rounds: int = 30) -> dict[str
         secondary = client.post("/api/v1/transfers/secondary-check", json=secondary_payload)
         elapsed_ms = (time.perf_counter() - start) * 1000
         assert secondary.status_code == 200
-        timings.append(elapsed_ms)
+        if idx == 0:
+            cold_start_timing_ms = elapsed_ms
+        else:
+            warm_timings.append(elapsed_ms)
     return {
-        "avg_ms": round(mean(timings), 2),
-        "p95_ms": round(_percentile(timings, 0.95), 2),
+        "cold_start": {
+            "avg_ms": round(cold_start_timing_ms, 2),
+            "p95_ms": round(cold_start_timing_ms, 2),
+            "rounds": 1,
+        },
+        "warm_path": {
+            "avg_ms": round(mean(warm_timings), 2),
+            "p95_ms": round(_percentile(warm_timings, 0.95), 2),
+            "rounds": len(warm_timings),
+        },
     }
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi import Request
@@ -12,12 +13,19 @@ from .config import settings
 from .db import init_database
 from .mcp_runtime import mount_mcp_servers
 from .seed import seed_demo_data
+from .services.embedding_service import get_embedding_service
+from .services.risk_knowledge_base import get_risk_knowledge_base_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_database()
     seed_demo_data()
+    try:
+        get_embedding_service().prewarm()
+        get_risk_knowledge_base_service().prewarm()
+    except Exception as error:
+        logging.warning("Startup prewarm skipped: %s", error)
     app.state.mcp_status = mount_mcp_servers(app)
     yield
 

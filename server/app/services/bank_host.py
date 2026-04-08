@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+import time
 
 from ..repositories.banking import BankingRepository
 from ..schemas.common import SpendingCategory, TransactionItem
@@ -27,6 +29,14 @@ from .risk_knowledge_base import get_risk_knowledge_base_service
 
 
 class BankHostService:
+    REASON_NON_PENDING_STATUS = "non_pending_status"
+    REASON_PRECHECK_BLOCKED = "precheck_blocked"
+    REASON_SECONDARY_NOT_PASSED = "secondary_not_passed"
+    REASON_DUPLICATE_SECONDARY_SUBMISSION = "duplicate_secondary_submission"
+
+    ERROR_SECONDARY_SINGLE_ROUND = "二次质询本轮仅允许一次提交，请重新发起转账或取消交易。"
+    ERROR_CONFIRM_SECONDARY_NOT_PASSED = "该转账尚未通过二次校验，无法继续确认。"
+
     # HIRD-D: 治理层，负责装配银行宿主所需的数据仓库、评分引擎和外部情报能力。
     def __init__(self, repository: BankingRepository | None = None) -> None:
         self.repository = repository or BankingRepository()
@@ -81,6 +91,7 @@ class BankHostService:
     def precheck_transfer(
         self, request: TransferPrecheckRequest
     ) -> TransferPrecheckResponse:
+        total_started_at = time.perf_counter()
         common_cities = self._common_cities()
         payee = self.repository.find_payee(request.payee_name)
         confirmation_token = self.repository.build_confirmation_token()
@@ -100,13 +111,16 @@ class BankHostService:
                 "semantic_summary": PiiMasker.mask_text(request.context.semantic_summary),
             },
         )
+        external_started_at = time.perf_counter()
         external_intelligence = self.screen_external_intelligence(request.payee_name)
+        external_intelligence_ms = self._elapsed_ms(external_started_at)
 
         is_known_payee = payee is not None
         # 演示环境：小a-小f 是模拟的已知/未知收款人，部分强制设定为已知以测试特定路径
         if request.payee_name in {"小a", "小b", "小c"}:
             is_known_payee = True
 
+        classification_started_at = time.perf_counter()
         risk_classification = self.risk_knowledge.classify_text(
             text=self._build_classification_text(
                 payee_name=request.payee_name,
@@ -119,7 +133,9 @@ class BankHostService:
             common_cities=common_cities,
             is_known_payee=is_known_payee,
         )
+        classification_ms = self._elapsed_ms(classification_started_at)
         c_match = self._derive_c_match(risk_classification)
+        engine_started_at = time.perf_counter()
         assessment = self.risk_engine.assess(
             RiskInput(
                 payee_name=request.payee_name,
@@ -149,7 +165,9 @@ class BankHostService:
                 c_match=c_match,
             )
         )
+        engine_ms = self._elapsed_ms(engine_started_at)
         assistant_message = self._build_transfer_message(request, assessment)
+        persistence_started_at = time.perf_counter()
         token = self.repository.create_pending_transfer(
             payee_name=request.payee_name,
             amount=request.amount,
@@ -181,6 +199,8 @@ class BankHostService:
             final_risk=assessment.final_risk,
             reasons=assessment.reasons,
         )
+        persistence_ms = self._elapsed_ms(persistence_started_at)
+        timing_total_ms = self._elapsed_ms(total_started_at)
         self._write_trace_event(
             confirmation_token=token,
             event_type="precheck_decided",
@@ -198,6 +218,11 @@ class BankHostService:
                     hit.summary for hit in external_intelligence.hits
                 ],
                 "reasons": assessment.reasons,
+                "timing_total_ms": timing_total_ms,
+                "timing_external_intelligence_ms": external_intelligence_ms,
+                "timing_classification_ms": classification_ms,
+                "timing_engine_ms": engine_ms,
+                "timing_persistence_ms": persistence_ms,
             },
         )
         explain_pack = self._build_precheck_explain_pack(
@@ -239,7 +264,7 @@ class BankHostService:
                 risk_level=transfer.get("risk_level"),
                 final_risk=float(transfer.get("final_risk") or 0.0),
                 payload={
-                    "reason": "non_pending_status",
+                    "reason": self.REASON_NON_PENDING_STATUS,
                     "status": transfer["status"],
                 },
             )
@@ -252,7 +277,7 @@ class BankHostService:
                 decision=transfer["decision"],
                 risk_level=transfer["risk_level"],
                 final_risk=float(transfer["final_risk"]),
-                payload={"reason": "precheck_blocked"},
+                payload={"reason": self.REASON_PRECHECK_BLOCKED},
             )
             raise ValueError("该转账已被风控拦截，无法继续确认。")
         if (
@@ -267,11 +292,11 @@ class BankHostService:
                 risk_level=transfer["risk_level"],
                 final_risk=float(transfer.get("secondary_risk") or transfer["final_risk"]),
                 payload={
-                    "reason": "secondary_not_passed",
+                    "reason": self.REASON_SECONDARY_NOT_PASSED,
                     "secondary_decision": transfer.get("secondary_decision"),
                 },
             )
-            raise ValueError("该转账尚未通过二次校验，无法继续确认。")
+            raise ValueError(self.ERROR_CONFIRM_SECONDARY_NOT_PASSED)
         payload = self.repository.commit_transfer(request.confirmation_token)
         self._write_trace_event(
             confirmation_token=request.confirmation_token,
@@ -318,7 +343,7 @@ class BankHostService:
                 risk_level=transfer.get("risk_level"),
                 final_risk=float(transfer.get("final_risk") or 0.0),
                 payload={
-                    "reason": "non_pending_status",
+                    "reason": self.REASON_NON_PENDING_STATUS,
                     "status": transfer["status"],
                 },
             )
@@ -352,6 +377,7 @@ class BankHostService:
     def secondary_check_transfer(
         self, request: TransferSecondaryCheckRequest
     ) -> TransferSecondaryCheckResponse:
+        total_started_at = time.perf_counter()
         transfer_status = self.repository.get_transfer_status(request.confirmation_token)
         if transfer_status is None:
             raise ValueError("未找到对应转账记录。")
@@ -366,7 +392,7 @@ class BankHostService:
                     risk_level=transfer.get("risk_level"),
                     final_risk=float(transfer.get("final_risk") or 0.0),
                     payload={
-                        "reason": "non_pending_status",
+                        "reason": self.REASON_NON_PENDING_STATUS,
                         "status": transfer_status,
                     },
                 )
@@ -382,11 +408,11 @@ class BankHostService:
                 risk_level=pending["risk_level"],
                 final_risk=float(pending.get("secondary_risk") or pending["final_risk"]),
                 payload={
-                    "reason": "duplicate_secondary_submission",
+                    "reason": self.REASON_DUPLICATE_SECONDARY_SUBMISSION,
                     "secondary_decision": pending.get("secondary_decision"),
                 },
             )
-            raise ValueError("二次质询本轮仅允许一次提交，请重新发起转账或取消交易。")
+            raise ValueError(self.ERROR_SECONDARY_SINGLE_ROUND)
         if pending["decision"] == "block":
             self._write_trace_event(
                 confirmation_token=request.confirmation_token,
@@ -395,7 +421,7 @@ class BankHostService:
                 decision=pending["decision"],
                 risk_level=pending["risk_level"],
                 final_risk=float(pending["final_risk"]),
-                payload={"reason": "precheck_blocked"},
+                payload={"reason": self.REASON_PRECHECK_BLOCKED},
             )
             raise ValueError("该转账已被预检拦截，无需执行二次校验。")
 
@@ -415,16 +441,25 @@ class BankHostService:
         policy_version = "secondary_policy_v1"
 
         if pending["decision"] == "pass":
-            external_intelligence = self.screen_external_intelligence(
-                pending["payee_name"]
-            )
-            risk_classification = self.risk_knowledge.classify_text(
-                text=pending["semantic_summary"],
-                amount=float(pending["amount"]),
-                current_city=pending["city"],
-                common_cities=self._common_cities(),
-                is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
-            )
+            common_cities = self._common_cities()
+            is_known_payee = self.repository.find_payee(pending["payee_name"]) is not None
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                external_future = executor.submit(
+                    self._call_with_timing,
+                    self.screen_external_intelligence,
+                    pending["payee_name"],
+                )
+                classification_future = executor.submit(
+                    self._call_with_timing,
+                    self.risk_knowledge.classify_text,
+                    text=pending["semantic_summary"],
+                    amount=float(pending["amount"]),
+                    current_city=pending["city"],
+                    common_cities=common_cities,
+                    is_known_payee=is_known_payee,
+                )
+                external_intelligence, external_intelligence_ms = external_future.result()
+                risk_classification, classification_ms = classification_future.result()
             explain_pack = self._build_secondary_explain_pack(
                 flag_s=float(pending["flag_s"]),
                 g_behavior=float(pending["g_behavior"]),
@@ -436,6 +471,7 @@ class BankHostService:
                 risk_level=risk_classification.risk_level,
                 external_intelligence=external_intelligence,
             )
+            persistence_started_at = time.perf_counter()
             self.repository.update_secondary_check(
                 confirmation_token=request.confirmation_token,
                 secondary_decision="pass_secondary",
@@ -445,6 +481,7 @@ class BankHostService:
                 secondary_reply=request.user_reply,
                 policy_version=policy_version,
             )
+            persistence_ms = self._elapsed_ms(persistence_started_at)
             self._write_trace_event(
                 confirmation_token=request.confirmation_token,
                 event_type="secondary_decided",
@@ -457,6 +494,10 @@ class BankHostService:
                     "risk_level": risk_classification.risk_level,
                     "policy_version": policy_version,
                     "semantic_red_flags": [],
+                    "timing_total_ms": self._elapsed_ms(total_started_at),
+                    "timing_external_intelligence_ms": external_intelligence_ms,
+                    "timing_classification_ms": classification_ms,
+                    "timing_persistence_ms": persistence_ms,
                 },
             )
             return TransferSecondaryCheckResponse(
@@ -472,34 +513,53 @@ class BankHostService:
 
         from .agent_service import get_agent_service
 
+        common_cities = self._common_cities()
+        is_known_payee = self.repository.find_payee(pending["payee_name"]) is not None
+
+        anchor_started_at = time.perf_counter()
         anchor_classification = self.risk_knowledge.classify_text(
             text=pending["semantic_summary"],
             amount=float(pending["amount"]),
             current_city=pending["city"],
-            common_cities=self._common_cities(),
-            is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
+            common_cities=common_cities,
+            is_known_payee=is_known_payee,
         )
+        anchor_classification_ms = self._elapsed_ms(anchor_started_at)
         secondary_question = self._select_secondary_question(
             anchor_classification.follow_up_questions
         )
-        risk_classification = self.risk_knowledge.classify_text(
-            text=f"{pending['semantic_summary']} {request.user_reply}".strip(),
-            amount=float(pending["amount"]),
-            current_city=pending["city"],
-            common_cities=self._common_cities(),
-            is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
-        )
-        external_intelligence = self.screen_external_intelligence(pending["payee_name"])
-        result = get_agent_service().evaluate_secondary_intercept(
-            user_reply=request.user_reply,
-            semantic_summary=pending["semantic_summary"],
-            risk_category=anchor_classification.risk_category,
-            risk_level=anchor_classification.risk_level,
-            matched_keywords=anchor_classification.matched_keywords,
-            matched_scenarios=anchor_classification.matched_scenarios,
-            follow_up_questions=anchor_classification.follow_up_questions,
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            classification_future = executor.submit(
+                self._call_with_timing,
+                self.risk_knowledge.classify_text,
+                text=f"{pending['semantic_summary']} {request.user_reply}".strip(),
+                amount=float(pending["amount"]),
+                current_city=pending["city"],
+                common_cities=common_cities,
+                is_known_payee=is_known_payee,
+            )
+            external_future = executor.submit(
+                self._call_with_timing,
+                self.screen_external_intelligence,
+                pending["payee_name"],
+            )
+            result = get_agent_service().evaluate_secondary_intercept(
+                user_reply=request.user_reply,
+                semantic_summary=pending["semantic_summary"],
+                risk_category=anchor_classification.risk_category,
+                risk_level=anchor_classification.risk_level,
+                matched_keywords=anchor_classification.matched_keywords,
+                matched_scenarios=anchor_classification.matched_scenarios,
+                follow_up_questions=anchor_classification.follow_up_questions,
+            )
+            risk_classification, additional_classification_ms = classification_future.result()
+            external_intelligence, external_intelligence_ms = external_future.result()
+        classification_ms = round(
+            anchor_classification_ms + additional_classification_ms,
+            2,
         )
 
+        persistence_started_at = time.perf_counter()
         self.repository.update_secondary_check(
             confirmation_token=request.confirmation_token,
             secondary_decision=result.decision,
@@ -526,6 +586,7 @@ class BankHostService:
             secondary_reply=request.user_reply,
             policy_version=policy_version,
         )
+        persistence_ms = self._elapsed_ms(persistence_started_at)
         explain_pack = self._build_secondary_explain_pack(
             flag_s=float(pending["flag_s"]),
             g_behavior=float(pending["g_behavior"]),
@@ -549,6 +610,15 @@ class BankHostService:
                 "risk_category": risk_classification.risk_category,
                 "risk_level": risk_classification.risk_level,
                 "policy_version": policy_version,
+                "timing_total_ms": self._elapsed_ms(total_started_at),
+                "timing_classification_ms": classification_ms,
+                "timing_external_intelligence_ms": external_intelligence_ms,
+                "timing_persistence_ms": persistence_ms,
+                **(
+                    {"timing_llm_ms": result.llm_elapsed_ms}
+                    if result.used_llm and result.llm_elapsed_ms is not None
+                    else {}
+                ),
             },
         )
         return TransferSecondaryCheckResponse(
@@ -881,6 +951,14 @@ class BankHostService:
             final_risk=final_risk,
             payload=payload,
         )
+
+    def _call_with_timing(self, func, /, *args, **kwargs):
+        started_at = time.perf_counter()
+        value = func(*args, **kwargs)
+        return value, self._elapsed_ms(started_at)
+
+    def _elapsed_ms(self, started_at: float) -> float:
+        return round((time.perf_counter() - started_at) * 1000, 2)
 
 
 # HIRD-D: 治理层，负责提供银行宿主服务的单例入口。

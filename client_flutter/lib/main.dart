@@ -70,6 +70,14 @@ class _BankHomePageState extends State<BankHomePage> {
   String _currentCity = '上海';
   String _deviceId = '演示设备-001';
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+  bool _secondaryBusy = false;
+  bool _confirmBusy = false;
+  bool _cancelBusy = false;
+  bool _transferBusyVisible = false;
+  bool _transferLongWait = false;
+  String _transferBusyAction = '';
+  Timer? _transferBusyDelayTimer;
+  Timer? _transferBusyLongWaitTimer;
 
   @override
   void initState() {
@@ -147,18 +155,83 @@ class _BankHomePageState extends State<BankHomePage> {
   }
 
   void _showSnack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(context);
+      if (messenger == null) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    });
+  }
+
+  void _startTransferBusyFeedback(String actionLabel) {
+    _transferBusyDelayTimer?.cancel();
+    _transferBusyLongWaitTimer?.cancel();
+    setState(() {
+      _transferBusyAction = actionLabel;
+      _transferBusyVisible = false;
+      _transferLongWait = false;
+    });
+    _transferBusyDelayTimer = Timer(const Duration(seconds: 1), () {
+      if (!mounted) return;
+      setState(() {
+        _transferBusyVisible = true;
+      });
+    });
+    _transferBusyLongWaitTimer = Timer(const Duration(seconds: 10), () {
+      if (!mounted) return;
+      setState(() {
+        _transferBusyVisible = true;
+        _transferLongWait = true;
+      });
+    });
+  }
+
+  void _stopTransferBusyFeedback() {
+    _transferBusyDelayTimer?.cancel();
+    _transferBusyLongWaitTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _transferBusyVisible = false;
+      _transferLongWait = false;
+      _transferBusyAction = '';
+    });
+  }
+
+  Future<T> _runTransferActionWithBusy<T>({
+    required String actionLabel,
+    required Future<T> Function() action,
+  }) async {
+    _startTransferBusyFeedback(actionLabel);
+    try {
+      return await action();
+    } finally {
+      _stopTransferBusyFeedback();
+    }
   }
 
   Future<void> _cancelPendingTransfer(String confirmationToken) async {
+    if (_cancelBusy) {
+      _showSnack('取消交易处理中，请稍候');
+      return;
+    }
+    _cancelBusy = true;
     try {
-      final TransferCancelResult result =
-          await widget.apiClient.cancelTransfer(confirmationToken);
+      final TransferCancelResult result = await _runTransferActionWithBusy(
+        actionLabel: '取消交易',
+        action: () => widget.apiClient.cancelTransfer(confirmationToken),
+      );
+      if (!mounted) return;
       _showSnack(result.assistantMessage);
     } on ApiException catch (error) {
+      if (!mounted) return;
       _showSnack(error.message);
     } catch (_) {
+      if (!mounted) return;
       _showSnack('取消交易失败，请稍后重试');
+    } finally {
+      _cancelBusy = false;
     }
   }
 
@@ -268,6 +341,7 @@ class _BankHomePageState extends State<BankHomePage> {
 
     String selectedCity = cityPreset;
     bool busy = false;
+    TransferPrecheckResult? successfulPrecheck;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -361,10 +435,10 @@ class _BankHomePageState extends State<BankHomePage> {
                                 },
                               ),
                             );
-                            if (context.mounted) Navigator.pop(context);
-                            if (!mounted) return;
-                            _showSnack(precheck.assistantMessage);
-                            await _handlePrecheck(precheck);
+                            successfulPrecheck = precheck;
+                            if (context.mounted) {
+                              Navigator.pop(context);
+                            }
                           } on ApiException catch (error) {
                             if (context.mounted) setModalState(() => busy = false);
                             _showSnack(error.message);
@@ -383,10 +457,11 @@ class _BankHomePageState extends State<BankHomePage> {
     );
 
     inputStopwatch.stop();
-    await Future<void>.delayed(const Duration(milliseconds: 250));
-    payeeController.dispose();
-    amountController.dispose();
-    deviceController.dispose();
+
+    if (successfulPrecheck != null && mounted) {
+      _showSnack(successfulPrecheck!.assistantMessage);
+      await _handlePrecheck(successfulPrecheck!);
+    }
   }
 
   Future<void> _handlePrecheck(TransferPrecheckResult result) async {
@@ -425,21 +500,30 @@ class _BankHomePageState extends State<BankHomePage> {
       }
 
       final String userReply = outcome.reply!;
+      if (_secondaryBusy) {
+        _showSnack('二次校验处理中，请稍候');
+        return;
+      }
+      _secondaryBusy = true;
       try {
         final TransferSecondaryCheckResult secondary =
-            await widget.apiClient.secondaryCheckTransfer(
-          confirmationToken: result.confirmationToken,
-          userReply: userReply,
-          context: _context(
-            city: _currentCity,
-            page: 'transfer',
-            action: 'secondary_check',
-            summary: '用户在二次质询阶段提交解释。',
-            extraSignals: <String, dynamic>{
-              'reply_length': userReply.length,
-            },
+            await _runTransferActionWithBusy(
+          actionLabel: '二次校验',
+          action: () => widget.apiClient.secondaryCheckTransfer(
+            confirmationToken: result.confirmationToken,
+            userReply: userReply,
+            context: _context(
+              city: _currentCity,
+              page: 'transfer',
+              action: 'secondary_check',
+              summary: '用户在二次质询阶段提交解释。',
+              extraSignals: <String, dynamic>{
+                'reply_length': userReply.length,
+              },
+            ),
           ),
         );
+        if (!mounted) return;
         _showSnack(secondary.assistantMessage);
         if (secondary.secondaryDecision == 'block_secondary') {
           await _showSecondaryBlockedDialog(secondary);
@@ -454,23 +538,39 @@ class _BankHomePageState extends State<BankHomePage> {
           return;
         }
       } on ApiException catch (error) {
+        if (!mounted) return;
         _showSnack(error.message);
         return;
       } catch (_) {
+        if (!mounted) return;
         _showSnack('二次校验失败，请稍后重试');
         return;
+      } finally {
+        _secondaryBusy = false;
       }
     }
 
+    if (_confirmBusy) {
+      _showSnack('确认转账处理中，请稍候');
+      return;
+    }
+    _confirmBusy = true;
     try {
-      final TransferConfirmResult confirm =
-          await widget.apiClient.confirmTransfer(result.confirmationToken);
+      final TransferConfirmResult confirm = await _runTransferActionWithBusy(
+        actionLabel: '确认转账',
+        action: () => widget.apiClient.confirmTransfer(result.confirmationToken),
+      );
+      if (!mounted) return;
       _showSnack(confirm.assistantMessage);
       await _loadDashboard();
     } on ApiException catch (error) {
+      if (!mounted) return;
       _showSnack(error.message);
     } catch (_) {
+      if (!mounted) return;
       _showSnack('模拟转账执行失败');
+    } finally {
+      _confirmBusy = false;
     }
   }
 
@@ -686,13 +786,58 @@ class _BankHomePageState extends State<BankHomePage> {
           IconButton(onPressed: () => unawaited(_loadDashboard()), icon: const Icon(Icons.refresh_rounded)),
         ],
       ),
-      body: IndexedStack(
-        index: _currentTab,
+      body: Stack(
         children: <Widget>[
-          _buildHome(),
-          const _PlaceholderTab(title: '支付', hint: '当前重点展示转账风控与智能体对话能力。'),
-          const _PlaceholderTab(title: '理财', hint: '理财推荐作为扩展功能预留。'),
-          const _PlaceholderTab(title: '我的', hint: '这里可扩展设备、地点与用户画像信息。'),
+          IndexedStack(
+            index: _currentTab,
+            children: <Widget>[
+              _buildHome(),
+              const _PlaceholderTab(title: '支付', hint: '当前重点展示转账风控与智能体对话能力。'),
+              const _PlaceholderTab(title: '理财', hint: '理财推荐作为扩展功能预留。'),
+              const _PlaceholderTab(title: '我的', hint: '这里可扩展设备、地点与用户画像信息。'),
+            ],
+          ),
+          if (_transferBusyVisible)
+            Positioned(
+              top: 8,
+              left: 12,
+              right: 12,
+              child: Material(
+                elevation: 2,
+                borderRadius: BorderRadius.circular(12),
+                color: const Color(0xFFE8F1FF),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Icon(
+                        Icons.hourglass_top_rounded,
+                        size: 18,
+                        color: Color(0xFF2B64D8),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _transferLongWait
+                              ? '$_transferBusyAction 仍在等待模型/服务响应，你可以关闭该提示并继续等待。'
+                              : '$_transferBusyAction 处理中，请稍候...',
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _transferBusyVisible = false;
+                          });
+                        },
+                        icon: const Icon(Icons.close_rounded),
+                        tooltip: '关闭提示',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -815,6 +960,13 @@ class _BankHomePageState extends State<BankHomePage> {
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _transferBusyDelayTimer?.cancel();
+    _transferBusyLongWaitTimer?.cancel();
+    super.dispose();
   }
 }
 
@@ -1185,6 +1337,7 @@ class _XaiExplainPanel extends StatelessWidget {
       ),
     );
   }
+
 }
 
 class _UiChatMessage {

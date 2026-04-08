@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
 import os
+from threading import Lock
 from typing import Optional, Any
 
 import numpy as np
@@ -37,6 +39,9 @@ class EmbeddingService:
         self.model: Any = None
         self._model_type: Optional[str] = None  # "sentence_transformers", "fastembed", or "tfidf"
         self._tfidf_vectorizer: Optional[TfidfVectorizer] = None
+        self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._embedding_cache_lock = Lock()
+        self._embedding_cache_max_size = 256
         logging.info("EmbeddingService initialized")
 
     def _load_model(self) -> Any:
@@ -105,22 +110,42 @@ class EmbeddingService:
                     t += " " + val
         return t
 
+    def prewarm(self) -> None:
+        """在服务启动阶段完成模型与向量器预热，避免首个请求放大尾延迟。"""
+        self._load_model()
+        self.get_embedding("正常转账 房租 还款 安全账户 验证码 屏幕共享")
+
     def get_embedding(self, text: str) -> list[float]:
         if not text or not text.strip():
             return [0.0] * 512
 
         model = self._load_model()
         processed = self._preprocess(text)
+        cache_key = f"{self._model_type}:{processed}"
+
+        with self._embedding_cache_lock:
+            cached = self._embedding_cache.get(cache_key)
+            if cached is not None:
+                self._embedding_cache.move_to_end(cache_key)
+                return list(cached)
 
         if self._model_type == "sentence_transformers":
-            return model.encode(processed, convert_to_numpy=True).tolist()
+            vector = model.encode(processed, convert_to_numpy=True).tolist()
         elif self._model_type == "fastembed":
-            return list(model.embed([processed]))[0].tolist()
+            vector = list(model.embed([processed]))[0].tolist()
         else: # tfidf
             vec = model.transform([processed]).toarray()[0]
             if len(vec) < 512:
                 vec = np.pad(vec, (0, 512 - len(vec)))
-            return vec.tolist()[:512]
+            vector = vec.tolist()[:512]
+
+        with self._embedding_cache_lock:
+            self._embedding_cache[cache_key] = list(vector)
+            self._embedding_cache.move_to_end(cache_key)
+            while len(self._embedding_cache) > self._embedding_cache_max_size:
+                self._embedding_cache.popitem(last=False)
+
+        return list(vector)
 
     def batch_get_embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:

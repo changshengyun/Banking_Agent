@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import logging
 from dataclasses import dataclass
@@ -10,37 +11,7 @@ from typing import Optional, Any
 from ..db import get_connection
 from ..schemas.risk import RiskClassificationPayload
 from .embedding_service import get_embedding_service, normalize_text
-
-NEGATION_CUES: tuple[str, ...] = (
-    "不涉及",
-    "未涉及",
-    "不会",
-    "不",
-    "没有",
-    "没",
-    "无",
-    "并非",
-    "不是",
-    "拒绝",
-    "无需",
-    "不用",
-    "不要",
-)
-
-HIGH_RISK_SIGNAL_TERMS: tuple[str, ...] = (
-    "验证码",
-    "verificationcode",
-    "安全账户",
-    "safeaccount",
-    "监管账户",
-    "验资",
-    "资金清查",
-    "屏幕共享",
-    "共享屏幕",
-    "远程控制",
-    "远程协助",
-)
-
+from ..utils import nlp_utils
 
 @dataclass(frozen=True)
 class RiskScenario:
@@ -279,6 +250,11 @@ class RiskKnowledgeBaseService:
         self._seeded = False
         self._seed_lock = Lock()
         self._scenarios_cache: list[dict] | None = None
+        self._classification_cache: OrderedDict[tuple, RiskClassificationPayload] = (
+            OrderedDict()
+        )
+        self._classification_cache_lock = Lock()
+        self._classification_cache_max_size = 256
 
     def ensure_seeded(self) -> None:
         """确保知识库已初始化并同步。支持幂等更新。"""
@@ -335,6 +311,13 @@ class RiskKnowledgeBaseService:
                     )
             self._seeded = True
             self._scenarios_cache = None
+            with self._classification_cache_lock:
+                self._classification_cache.clear()
+
+    def prewarm(self) -> None:
+        """在应用启动阶段完成知识库种子和场景向量装载。"""
+        self.ensure_seeded()
+        self._load_scenarios_with_vectors()
 
     def classify_text(
         self,
@@ -348,12 +331,25 @@ class RiskKnowledgeBaseService:
         self.ensure_seeded()
         normalized_text = normalize_text(text)
         scenarios = self._load_scenarios_with_vectors()
+        cache_key = (
+            normalized_text,
+            round(amount, 2),
+            current_city,
+            tuple(sorted(common_cities)),
+            bool(is_known_payee),
+        )
 
         if not normalized_text:
             return self._build_contextual_fallback(
                 amount=amount, current_city=current_city,
                 common_cities=common_cities, is_known_payee=is_known_payee,
             )
+
+        with self._classification_cache_lock:
+            cached = self._classification_cache.get(cache_key)
+            if cached is not None:
+                self._classification_cache.move_to_end(cache_key)
+                return self._clone_payload(cached)
 
         # 1. 向量语义检索 (Recall)
         text_vector = self.embedding_service.get_embedding(normalized_text)
@@ -417,7 +413,7 @@ class RiskKnowledgeBaseService:
         else:
             analysis_parts.append(top_scenario.description)
 
-        return RiskClassificationPayload(
+        result = RiskClassificationPayload(
             risk_category=top_scenario.risk_category,
             risk_level=str(top_match["effective_risk_level"]),
             block_hint=(
@@ -433,6 +429,8 @@ class RiskKnowledgeBaseService:
             )[:4],
             suggested_reply_examples=list(top_scenario.suggested_reply_examples[:2]),
         )
+        self._store_classification_cache(cache_key, result)
+        return self._clone_payload(result)
 
     def _load_scenarios_with_vectors(self) -> list[dict]:
         """从数据库加载场景及其向量。"""
@@ -538,57 +536,57 @@ class RiskKnowledgeBaseService:
             "effective_risk_level": effective_risk_level,
         }
 
+    def _store_classification_cache(
+        self,
+        cache_key: tuple,
+        payload: RiskClassificationPayload,
+    ) -> None:
+        with self._classification_cache_lock:
+            self._classification_cache[cache_key] = self._clone_payload(payload)
+            self._classification_cache.move_to_end(cache_key)
+            while len(self._classification_cache) > self._classification_cache_max_size:
+                self._classification_cache.popitem(last=False)
+
+    def _clone_payload(
+        self,
+        payload: RiskClassificationPayload,
+    ) -> RiskClassificationPayload:
+        if hasattr(payload, "model_copy"):
+            return payload.model_copy(deep=True)
+        return payload.copy(deep=True)
+
     def _affirmative_matches(self, text: str, terms: tuple[str, ...]) -> list[str]:
         return [
             term
             for term in terms
-            if self._contains_affirmative_term(text, term)
+            if nlp_utils.contains_affirmative(text, term)
         ]
 
     def _negated_matches(self, text: str, terms: tuple[str, ...]) -> list[str]:
         return [
             term
             for term in terms
-            if self._contains_negated_term(text, term)
+            if nlp_utils.contains_negated(text, term)
         ]
 
-    def _contains_affirmative_term(self, text: str, term: str) -> bool:
-        for start in self._find_term_positions(text, term):
-            if not self._is_negated_occurrence(text=text, start=start, term=term):
-                return True
-        return False
-
-    def _contains_negated_term(self, text: str, term: str) -> bool:
-        for start in self._find_term_positions(text, term):
-            if self._is_negated_occurrence(text=text, start=start, term=term):
-                return True
-        return False
-
-    def _find_term_positions(self, text: str, term: str) -> list[int]:
-        positions: list[int] = []
-        if not term:
-            return positions
-        start = 0
-        while True:
-            index = text.find(term, start)
-            if index == -1:
-                break
-            positions.append(index)
-            start = index + len(term)
-        return positions
-
-    def _is_negated_occurrence(self, *, text: str, start: int, term: str) -> bool:
-        left_window = text[max(0, start - 24):start]
-        right_window = text[start + len(term): start + len(term) + 8]
-        return any(cue in left_window for cue in NEGATION_CUES) or any(
-            right_window.startswith(cue) for cue in ("没有", "没", "未", "不")
-        )
-
     def _count_negated_high_risk_signals(self, text: str) -> int:
+        high_risk_signals = (
+            "验证码",
+            "verificationcode",
+            "安全账户",
+            "safeaccount",
+            "监管账户",
+            "验资",
+            "资金清查",
+            "屏幕共享",
+            "共享屏幕",
+            "远程控制",
+            "远程协助",
+        )
         return sum(
             1
-            for term in HIGH_RISK_SIGNAL_TERMS
-            if self._contains_negated_term(text, term)
+            for term in high_risk_signals
+            if nlp_utils.contains_negated(text, term)
         )
 
     def _unique(self, items) -> list[str]:

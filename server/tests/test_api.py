@@ -246,6 +246,44 @@ def test_classify_risk_returns_high_risk_phrase_hits_for_phrase_only_input() -> 
         assert body["block_hint"] is True
 
 
+def test_classify_risk_negated_high_risk_terms_do_not_create_phrase_hits() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/transfers/classify-risk",
+            json={
+                "payee_name": "朋友小a",
+                "amount": 1200,
+                "context": {
+                    "session_id": "session-negated-high-risk-terms",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "上海",
+                    "lat": 31.2304,
+                    "lng": 121.4737,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": (
+                        "收款人是我朋友，这次是还款，"
+                        "不涉及验证码、安全账户或屏幕共享。"
+                    ),
+                },
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+
+    _assert_risk_classification_contract(body, expect_phrase_hits=False)
+    assert body["risk_category"] == "正常转账"
+    assert body["high_risk_phrase_hits"] == []
+    assert "验证码" not in body["matched_keywords"]
+    assert "安全账户" not in body["matched_keywords"]
+    assert "屏幕共享" not in body["matched_keywords"]
+
+
 def test_classify_risk_uses_contextual_fallback_for_empty_summary() -> None:
     from fastapi.testclient import TestClient
 
@@ -640,6 +678,49 @@ def test_secondary_intercept_negation_reply_does_not_trigger_red_flags() -> None
     assert result.decision == "pass_secondary"
     assert result.semantic_red_flags == []
     assert result.risk < 0.3
+
+
+def test_secondary_intercept_same_sentence_negation_conflict_is_not_flagged() -> None:
+    from server.app.services.agent_service import AgentService
+
+    service = AgentService(llm_gateway=_FailingLlmGateway())
+    result = service.evaluate_secondary_intercept(
+        user_reply=(
+            "收款人是我同事，这次是还款，"
+            "不涉及验证码但只是提醒不要泄露验证码，不涉及安全账户或屏幕共享。"
+        ),
+        semantic_summary="用户补充解释。",
+        risk_category="异地大额异常转账",
+        risk_level="medium",
+        matched_keywords=["异地", "大额"],
+        matched_scenarios=["异地大额转账风险"],
+        follow_up_questions=["请说明你与收款人的关系。", "请说明本次转账用途。"],
+    )
+
+    assert result.decision == "pass_secondary"
+    assert result.semantic_red_flags == []
+    assert result.risk < 0.3
+
+
+def test_secondary_intercept_cross_sentence_positive_hit_is_still_blocked() -> None:
+    from server.app.services.agent_service import AgentService
+
+    service = AgentService(llm_gateway=_FailingLlmGateway())
+    result = service.evaluate_secondary_intercept(
+        user_reply=(
+            "收款人是我朋友，这次是还款，不涉及验证码、安全账户或屏幕共享。"
+            "但对方现在让我把验证码发给他并共享屏幕。"
+        ),
+        semantic_summary="用户补充解释。",
+        risk_category="异地大额异常转账",
+        risk_level="medium",
+        matched_keywords=["异地", "大额"],
+        matched_scenarios=["异地大额转账风险"],
+        follow_up_questions=["请说明你与收款人的关系。", "请说明本次转账用途。"],
+    )
+
+    assert result.decision == "block_secondary"
+    assert "验证码/屏幕共享" in result.semantic_red_flags
 
 
 def test_secondary_intercept_returns_interrogate_when_llm_unavailable() -> None:

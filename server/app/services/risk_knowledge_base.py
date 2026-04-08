@@ -4,11 +4,42 @@ import json
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
+from threading import Lock
 from typing import Optional, Any
 
 from ..db import get_connection
 from ..schemas.risk import RiskClassificationPayload
 from .embedding_service import get_embedding_service, normalize_text
+
+NEGATION_CUES: tuple[str, ...] = (
+    "不涉及",
+    "未涉及",
+    "不会",
+    "不",
+    "没有",
+    "没",
+    "无",
+    "并非",
+    "不是",
+    "拒绝",
+    "无需",
+    "不用",
+    "不要",
+)
+
+HIGH_RISK_SIGNAL_TERMS: tuple[str, ...] = (
+    "验证码",
+    "verificationcode",
+    "安全账户",
+    "safeaccount",
+    "监管账户",
+    "验资",
+    "资金清查",
+    "屏幕共享",
+    "共享屏幕",
+    "远程控制",
+    "远程协助",
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +81,7 @@ DEFAULT_RISK_SCENARIOS: tuple[RiskScenario, ...] = (
         keywords=(
             "房租", "工资", "还款", "学费", "生活费", "餐费", "aa", "物业费",
             "水电费", "燃气费", "押金", "朋友", "同事", "家人", "父母", "房东",
+            "日常生活转账", "普通还款", "日常转账", "生活转账",
         ),
         high_risk_phrases=(),
         suspicious_behaviors=("用途明确", "关系可核验", "无验证码", "无屏幕共享"),
@@ -62,6 +94,56 @@ DEFAULT_RISK_SCENARIOS: tuple[RiskScenario, ...] = (
             "收款人是小c，是房东，本次转账是本月房租，没有客服、公检法或陌生人要求我操作。",
         ),
         target_user_profiles=("普通薪资用户", "家庭日常转账用户"),
+    ),
+    RiskScenario(
+        scenario_id="customer_service_fraud",
+        risk_category="客服退款诈骗",
+        title="客服退款/保障关闭诈骗",
+        description="对方冒充平台客服、保险客服或支付客服，以关闭保障、退款退费、验证资金为由要求转账。",
+        risk_level="high",
+        keywords=(
+            "客服", "退款", "退费", "关闭百万保障", "百万保障", "保险服务",
+            "支付客服", "验证资金", "退保", "刷流水",
+        ),
+        high_risk_phrases=(
+            "验证资金后退款", "先刷流水", "客服让我转账验证",
+            "退款验证",
+        ),
+        suspicious_behaviors=("冒充客服", "要求转账验证", "要求刷流水", "诱导脱离官方渠道"),
+        follow_up_questions=(
+            "你是否通过官方 App、官网或官方客服入口核实过对方身份？",
+            "对方是否要求你转账验证资金、提供验证码或开启屏幕共享？",
+        ),
+        suggested_reply_examples=(
+            "对方自称客服，说要关闭百万保障并让我转账验证资金，我怀疑是诈骗。",
+            "如果真是官方客服，我只会通过官方 App 核实，不会向陌生账户转账。",
+        ),
+        target_user_profiles=("普通支付用户", "保险服务用户", "中老年用户"),
+    ),
+    RiskScenario(
+        scenario_id="safe_account_fraud",
+        risk_category="安全账户诈骗",
+        title="安全账户/监管账户诈骗",
+        description="对方要求把资金转入所谓安全账户、监管账户或验资账户，并配合资金清查、验证码核验。",
+        risk_level="high",
+        keywords=(
+            "安全账户", "监管账户", "资金清查", "验资", "冻结前转账",
+            "verificationcode", "safeaccount", "验证码", "核验资金",
+        ),
+        high_risk_phrases=(
+            "转到安全账户", "转入监管账户", "资金清查完成后返还", "提供verificationcode",
+            "提供验证码", "安全账户转账", "safeaccount", "verificationcode",
+        ),
+        suspicious_behaviors=("转移资金", "要求验证码", "要求屏幕共享", "冒充安全核验"),
+        follow_up_questions=(
+            "对方是否明确要求你把钱转到安全账户、监管账户或验资账户？",
+            "对方是否要求你提供验证码、密码或共享屏幕？",
+        ),
+        suggested_reply_examples=(
+            "对方要求我转到安全账户并提供验证码，这明显不是正常银行流程。",
+            "任何要求我转入监管账户做资金清查的说法，我都会停止操作并联系银行。",
+        ),
+        target_user_profiles=("中老年用户", "风控敏感用户"),
     ),
     RiskScenario(
         scenario_id="borrow_money_impersonation",
@@ -114,7 +196,7 @@ DEFAULT_RISK_SCENARIOS: tuple[RiskScenario, ...] = (
     ),
     RiskScenario(
         scenario_id="remote_large_transfer",
-        risk_category="异常大额转账",
+        risk_category="异地大额异常转账",
         title="异地大额转账风险",
         description="在非常驻城市发起的、远超日常水平的大额转账请求。",
         risk_level="medium",
@@ -194,55 +276,65 @@ DEFAULT_RISK_SCENARIOS: tuple[RiskScenario, ...] = (
 class RiskKnowledgeBaseService:
     def __init__(self) -> None:
         self.embedding_service = get_embedding_service()
+        self._seeded = False
+        self._seed_lock = Lock()
+        self._scenarios_cache: list[dict] | None = None
 
     def ensure_seeded(self) -> None:
         """确保知识库已初始化并同步。支持幂等更新。"""
-        with get_connection() as connection:
-            # 批量获取嵌入以提高效率
-            embeddings = self.embedding_service.batch_get_embeddings(
-                [s.embedding_text for s in DEFAULT_RISK_SCENARIOS]
-            )
-
-            for scenario, vector in zip(DEFAULT_RISK_SCENARIOS, embeddings):
-                connection.execute(
-                    """
-                    INSERT INTO risk_scene_knowledge
-                    (scenario_id, risk_category, title, description, risk_level, keywords_json,
-                     high_risk_phrases_json, suspicious_behaviors_json, follow_up_questions_json,
-                     suggested_reply_examples_json, target_user_profile_json, embedding_text,
-                     vector_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                    ON CONFLICT(scenario_id) DO UPDATE SET
-                        risk_category=excluded.risk_category,
-                        title=excluded.title,
-                        description=excluded.description,
-                        risk_level=excluded.risk_level,
-                        keywords_json=excluded.keywords_json,
-                        high_risk_phrases_json=excluded.high_risk_phrases_json,
-                        suspicious_behaviors_json=excluded.suspicious_behaviors_json,
-                        follow_up_questions_json=excluded.follow_up_questions_json,
-                        suggested_reply_examples_json=excluded.suggested_reply_examples_json,
-                        target_user_profile_json=excluded.target_user_profile_json,
-                        embedding_text=excluded.embedding_text,
-                        vector_json=excluded.vector_json,
-                        updated_at=datetime('now')
-                    """,
-                    (
-                        scenario.scenario_id,
-                        scenario.risk_category,
-                        scenario.title,
-                        scenario.description,
-                        scenario.risk_level,
-                        json.dumps(scenario.keywords, ensure_ascii=False),
-                        json.dumps(scenario.high_risk_phrases, ensure_ascii=False),
-                        json.dumps(scenario.suspicious_behaviors, ensure_ascii=False),
-                        json.dumps(scenario.follow_up_questions, ensure_ascii=False),
-                        json.dumps(scenario.suggested_reply_examples, ensure_ascii=False),
-                        json.dumps(scenario.target_user_profiles, ensure_ascii=False),
-                        scenario.embedding_text,
-                        json.dumps(vector),
-                    ),
+        if self._seeded:
+            return
+        with self._seed_lock:
+            if self._seeded:
+                return
+            with get_connection() as connection:
+                # 批量获取嵌入，避免每次请求都重新计算。
+                embeddings = self.embedding_service.batch_get_embeddings(
+                    [s.embedding_text for s in DEFAULT_RISK_SCENARIOS]
                 )
+
+                for scenario, vector in zip(DEFAULT_RISK_SCENARIOS, embeddings):
+                    connection.execute(
+                        """
+                        INSERT INTO risk_scene_knowledge
+                        (scenario_id, risk_category, title, description, risk_level, keywords_json,
+                         high_risk_phrases_json, suspicious_behaviors_json, follow_up_questions_json,
+                         suggested_reply_examples_json, target_user_profile_json, embedding_text,
+                         vector_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        ON CONFLICT(scenario_id) DO UPDATE SET
+                            risk_category=excluded.risk_category,
+                            title=excluded.title,
+                            description=excluded.description,
+                            risk_level=excluded.risk_level,
+                            keywords_json=excluded.keywords_json,
+                            high_risk_phrases_json=excluded.high_risk_phrases_json,
+                            suspicious_behaviors_json=excluded.suspicious_behaviors_json,
+                            follow_up_questions_json=excluded.follow_up_questions_json,
+                            suggested_reply_examples_json=excluded.suggested_reply_examples_json,
+                            target_user_profile_json=excluded.target_user_profile_json,
+                            embedding_text=excluded.embedding_text,
+                            vector_json=excluded.vector_json,
+                            updated_at=datetime('now')
+                        """,
+                        (
+                            scenario.scenario_id,
+                            scenario.risk_category,
+                            scenario.title,
+                            scenario.description,
+                            scenario.risk_level,
+                            json.dumps(scenario.keywords, ensure_ascii=False),
+                            json.dumps(scenario.high_risk_phrases, ensure_ascii=False),
+                            json.dumps(scenario.suspicious_behaviors, ensure_ascii=False),
+                            json.dumps(scenario.follow_up_questions, ensure_ascii=False),
+                            json.dumps(scenario.suggested_reply_examples, ensure_ascii=False),
+                            json.dumps(scenario.target_user_profiles, ensure_ascii=False),
+                            scenario.embedding_text,
+                            json.dumps(vector),
+                        ),
+                    )
+            self._seeded = True
+            self._scenarios_cache = None
 
     def classify_text(
         self,
@@ -279,7 +371,7 @@ class RiskKnowledgeBaseService:
                 current_city=current_city,
                 common_cities=common_cities,
                 is_known_payee=is_known_payee,
-                vector_recall_bonus=5.0 if is_recalled else 0.0,
+                vector_recall_bonus=1.0 if is_recalled else 0.0,
             )
             if scored["score"] > 0 or is_recalled:
                 scored_matches.append(scored)
@@ -294,7 +386,7 @@ class RiskKnowledgeBaseService:
         explicit_semantic_matches = [
             item for item in scored_matches
             if item["scenario"].scenario_id != "remote_large_transfer"
-            and (item["semantic_match_count"] > 0 or item["scenario"].scenario_id in vector_matches)
+            and item["semantic_match_count"] > 0
         ]
         if explicit_semantic_matches:
             scored_matches = explicit_semantic_matches
@@ -344,6 +436,8 @@ class RiskKnowledgeBaseService:
 
     def _load_scenarios_with_vectors(self) -> list[dict]:
         """从数据库加载场景及其向量。"""
+        if self._scenarios_cache is not None:
+            return self._scenarios_cache
         with get_connection() as connection:
             rows = connection.execute("SELECT * FROM risk_scene_knowledge").fetchall()
             scenarios = []
@@ -366,6 +460,7 @@ class RiskKnowledgeBaseService:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     vector = []
                 scenarios.append({"scenario": scenario, "vector": vector})
+            self._scenarios_cache = scenarios
             return scenarios
 
     def _vector_recall(self, text_vector: list[float], scenarios: list[dict]) -> list[str]:
@@ -388,10 +483,22 @@ class RiskKnowledgeBaseService:
         amount: float = kwargs["amount"]
         is_recalled = kwargs.get("vector_recall_bonus", 0) > 0
 
-        matched_keywords = [k for k in scenario.keywords if k in text]
-        high_risk_hits = [p for p in scenario.high_risk_phrases if p in text]
+        matched_keywords = self._affirmative_matches(text, scenario.keywords)
+        high_risk_hits = self._affirmative_matches(text, scenario.high_risk_phrases)
+        negated_keywords = self._negated_matches(text, scenario.keywords)
+        negated_high_risk_hits = self._negated_matches(text, scenario.high_risk_phrases)
+        semantic_match_count = len(matched_keywords) + len(high_risk_hits)
 
-        score = len(matched_keywords) * 1.5 + len(high_risk_hits) * 3.0 + kwargs.get("vector_recall_bonus", 0)
+        score = (
+            len(matched_keywords) * 1.5
+            + len(high_risk_hits) * 3.0
+            + kwargs.get("vector_recall_bonus", 0)
+        )
+        score -= len(negated_keywords) * 1.0
+        score -= len(negated_high_risk_hits) * 2.0
+        if scenario.scenario_id == "normal_transfer":
+            score += self._count_negated_high_risk_signals(text) * 0.1
+        score = max(0.0, score)
 
         # 远程大额场景特殊处理
         if scenario.scenario_id == "remote_large_transfer":
@@ -403,24 +510,86 @@ class RiskKnowledgeBaseService:
                 score += 1.0
 
         base_rank = self._risk_level_rank(scenario.risk_level)
-        if score > 10:
+        if high_risk_hits:
+            effective_risk_level = "high"
+        elif score > 10:
             derived_rank = 3
+            level_map = {1: "low", 2: "medium", 3: "high"}
+            effective_risk_level = level_map[derived_rank]
         elif score > 5:
             derived_rank = 2
+            level_map = {1: "low", 2: "medium", 3: "high"}
+            effective_risk_level = level_map[max(base_rank, derived_rank)]
         else:
             derived_rank = 1
-        effective_rank = max(base_rank, derived_rank)
-        level_map = {1: "low", 2: "medium", 3: "high"}
-        effective_risk_level = level_map[effective_rank]
+            if semantic_match_count > 0:
+                effective_risk_level = "medium" if base_rank >= 2 else "low"
+            elif scenario.scenario_id == "remote_large_transfer" and score >= 3.5:
+                effective_risk_level = "medium"
+            else:
+                effective_risk_level = "low"
 
         return {
             "scenario": scenario,
             "score": score,
             "matched_keywords": matched_keywords,
             "high_risk_phrase_hits": high_risk_hits,
-            "semantic_match_count": 1 if is_recalled else 0,
-            "effective_risk_level": effective_risk_level
+            "semantic_match_count": semantic_match_count,
+            "effective_risk_level": effective_risk_level,
         }
+
+    def _affirmative_matches(self, text: str, terms: tuple[str, ...]) -> list[str]:
+        return [
+            term
+            for term in terms
+            if self._contains_affirmative_term(text, term)
+        ]
+
+    def _negated_matches(self, text: str, terms: tuple[str, ...]) -> list[str]:
+        return [
+            term
+            for term in terms
+            if self._contains_negated_term(text, term)
+        ]
+
+    def _contains_affirmative_term(self, text: str, term: str) -> bool:
+        for start in self._find_term_positions(text, term):
+            if not self._is_negated_occurrence(text=text, start=start, term=term):
+                return True
+        return False
+
+    def _contains_negated_term(self, text: str, term: str) -> bool:
+        for start in self._find_term_positions(text, term):
+            if self._is_negated_occurrence(text=text, start=start, term=term):
+                return True
+        return False
+
+    def _find_term_positions(self, text: str, term: str) -> list[int]:
+        positions: list[int] = []
+        if not term:
+            return positions
+        start = 0
+        while True:
+            index = text.find(term, start)
+            if index == -1:
+                break
+            positions.append(index)
+            start = index + len(term)
+        return positions
+
+    def _is_negated_occurrence(self, *, text: str, start: int, term: str) -> bool:
+        left_window = text[max(0, start - 24):start]
+        right_window = text[start + len(term): start + len(term) + 8]
+        return any(cue in left_window for cue in NEGATION_CUES) or any(
+            right_window.startswith(cue) for cue in ("没有", "没", "未", "不")
+        )
+
+    def _count_negated_high_risk_signals(self, text: str) -> int:
+        return sum(
+            1
+            for term in HIGH_RISK_SIGNAL_TERMS
+            if self._contains_negated_term(text, term)
+        )
 
     def _unique(self, items) -> list[str]:
         seen = set()

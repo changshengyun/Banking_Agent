@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS risk_events (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS trace_events (
+    id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    confirmation_token TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    event_type TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    decision TEXT,
+    risk_level TEXT,
+    final_risk REAL NOT NULL DEFAULT 0.0,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS pending_transfers (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),

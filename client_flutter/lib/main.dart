@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 
 import 'banking_api.dart';
 
+const String _invalidInputMessage = '无效输入，请按照要求输入';
+
 void main() {
   runApp(MyApp());
 }
@@ -146,6 +148,18 @@ class _BankHomePageState extends State<BankHomePage> {
 
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _cancelPendingTransfer(String confirmationToken) async {
+    try {
+      final TransferCancelResult result =
+          await widget.apiClient.cancelTransfer(confirmationToken);
+      _showSnack(result.assistantMessage);
+    } on ApiException catch (error) {
+      _showSnack(error.message);
+    } catch (_) {
+      _showSnack('取消交易失败，请稍后重试');
+    }
   }
 
   Future<void> _openBillSheet() async {
@@ -320,7 +334,7 @@ class _BankHomePageState extends State<BankHomePage> {
                           }
                           final int inputDurationMs = inputStopwatch.elapsed.inMilliseconds;
                           if (amount == null || amount <= 0 || payee.isEmpty || deviceId.isEmpty) {
-                            _showSnack('请完整填写转账信息');
+                            _showSnack(_invalidInputMessage);
                             return;
                           }
                           setModalState(() => busy = true);
@@ -401,10 +415,16 @@ class _BankHomePageState extends State<BankHomePage> {
       return;
     }
 
-    bool proceed = true;
     if (decision == 'interrogate') {
-      final String? userReply = await _showSecondaryReplyDialog(result);
-      if (userReply == null) return;
+      final _SecondaryReplyOutcome outcome = await _showSecondaryReplyDialog(result);
+      if (!mounted) return;
+      if (outcome.action == _SecondaryReplyAction.dismiss) return;
+      if (outcome.action == _SecondaryReplyAction.cancelTransaction) {
+        await _cancelPendingTransfer(result.confirmationToken);
+        return;
+      }
+
+      final String userReply = outcome.reply!;
       try {
         final TransferSecondaryCheckResult secondary =
             await widget.apiClient.secondaryCheckTransfer(
@@ -423,20 +443,24 @@ class _BankHomePageState extends State<BankHomePage> {
         _showSnack(secondary.assistantMessage);
         if (secondary.secondaryDecision == 'block_secondary') {
           await _showSecondaryBlockedDialog(secondary);
-          proceed = false;
-        } else {
-          proceed = true;
+          return;
+        }
+        if (secondary.secondaryDecision == 'interrogate') {
+          await _showSecondaryInterrogateDialog(secondary);
+          return;
+        }
+        if (secondary.secondaryDecision != 'pass_secondary') {
+          _showSnack('当前转账未通过二次校验，无法继续确认');
+          return;
         }
       } on ApiException catch (error) {
         _showSnack(error.message);
-        proceed = false;
+        return;
       } catch (_) {
         _showSnack('二次校验失败，请稍后重试');
-        proceed = false;
+        return;
       }
     }
-
-    if (!proceed) return;
 
     try {
       final TransferConfirmResult confirm =
@@ -450,8 +474,10 @@ class _BankHomePageState extends State<BankHomePage> {
     }
   }
 
-  Future<String?> _showSecondaryReplyDialog(TransferPrecheckResult result) async {
-    final TextEditingController controller = TextEditingController();
+  Future<_SecondaryReplyOutcome> _showSecondaryReplyDialog(
+    TransferPrecheckResult result,
+  ) async {
+    String replyDraft = '';
     final RiskClassificationData classification = result.riskClassification;
     final List<String> followUpQuestions =
         classification.followUpQuestions.isNotEmpty
@@ -467,7 +493,8 @@ class _BankHomePageState extends State<BankHomePage> {
         : const <String>[
             '收款人是小b，是我线下认识的朋友，这次转账用于归还借款，不涉及验证码或安全账户。',
           ];
-    final String? reply = await showDialog<String>(
+    final _SecondaryReplyOutcome? outcome = await showDialog<_SecondaryReplyOutcome>(
+      barrierDismissible: false,
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: Text('二次质询 · ${_riskLevelLabel(result.riskLevel)}'),
@@ -526,8 +553,10 @@ class _BankHomePageState extends State<BankHomePage> {
               ),
               const SizedBox(height: 12),
               TextField(
-                controller: controller,
                 maxLines: 4,
+                onChanged: (String value) {
+                  replyDraft = value;
+                },
                 decoration: const InputDecoration(
                   labelText: '请输入说明',
                   hintText: '关系 + 用途 + 是否涉及验证码/安全账户/屏幕共享',
@@ -539,34 +568,73 @@ class _BankHomePageState extends State<BankHomePage> {
         ),
         actions: <Widget>[
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+            onPressed: () => Navigator.pop(
+              context,
+              const _SecondaryReplyOutcome.dismiss(),
+            ),
+            child: const Text('关闭'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(
+              context,
+              const _SecondaryReplyOutcome.cancelTransaction(),
+            ),
+            child: const Text('取消交易'),
           ),
           FilledButton(
             onPressed: () {
-              final String text = controller.text.trim();
+              final String text = replyDraft.trim();
               if (text.isEmpty) {
-                _showSnack('请输入说明后再提交');
+                _showSnack(_invalidInputMessage);
                 return;
               }
-              Navigator.pop(context, text);
+              Navigator.pop(context, _SecondaryReplyOutcome.submit(text));
             },
             child: const Text('提交校验'),
           ),
         ],
       ),
     );
-    controller.dispose();
-    return reply;
+    return outcome ?? const _SecondaryReplyOutcome.dismiss();
   }
 
   Future<void> _showSecondaryBlockedDialog(
     TransferSecondaryCheckResult result,
   ) async {
     await showDialog<void>(
+      barrierDismissible: false,
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('二次校验未通过'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(result.assistantMessage),
+            const SizedBox(height: 12),
+            _XaiExplainPanel(explainPack: result.explainPack),
+            const SizedBox(height: 12),
+            ...result.reasons.map((String reason) => Text('• $reason')),
+          ],
+        ),
+        actions: <Widget>[
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showSecondaryInterrogateDialog(
+    TransferSecondaryCheckResult result,
+  ) async {
+    await showDialog<void>(
+      barrierDismissible: false,
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('二次说明未通过'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -779,7 +847,13 @@ class _AiChatSheetState extends State<_AiChatSheet> {
 
   Future<void> _send() async {
     final String text = _inputController.text.trim();
-    if (text.isEmpty || _sending) return;
+    if (_sending) return;
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text(_invalidInputMessage)));
+      return;
+    }
     setState(() {
       _sending = true;
       widget.messages.add(_UiChatMessage(text: text, isUser: true));
@@ -929,6 +1003,28 @@ class _QuickButton extends StatelessWidget {
       ),
     );
   }
+}
+
+enum _SecondaryReplyAction {
+  dismiss,
+  cancelTransaction,
+  submit,
+}
+
+class _SecondaryReplyOutcome {
+  const _SecondaryReplyOutcome._(this.action, this.reply);
+
+  const _SecondaryReplyOutcome.dismiss()
+    : this._(_SecondaryReplyAction.dismiss, null);
+
+  const _SecondaryReplyOutcome.cancelTransaction()
+    : this._(_SecondaryReplyAction.cancelTransaction, null);
+
+  const _SecondaryReplyOutcome.submit(String reply)
+    : this._(_SecondaryReplyAction.submit, reply);
+
+  final _SecondaryReplyAction action;
+  final String? reply;
 }
 
 class _PlaceholderTab extends StatelessWidget {

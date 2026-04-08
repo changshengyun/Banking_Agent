@@ -4,6 +4,8 @@ from fastapi import APIRouter
 
 from ...schemas.risk import RiskClassificationPayload
 from ...schemas.transfer import (
+    TransferCancelRequest,
+    TransferCancelResponse,
     TransferConfirmRequest,
     TransferConfirmResponse,
     TransferPrecheckRequest,
@@ -36,6 +38,13 @@ def confirm_transfer(
     payload: TransferConfirmRequest,
 ) -> TransferConfirmResponse:
     return get_bank_host_service().confirm_transfer(payload)
+
+
+@router.post("/transfers/cancel", response_model=TransferCancelResponse)
+def cancel_transfer(
+    payload: TransferCancelRequest,
+) -> TransferCancelResponse:
+    return get_bank_host_service().cancel_transfer(payload)
 
 
 @router.post("/transfers/secondary-check", response_model=TransferSecondaryCheckResponse)

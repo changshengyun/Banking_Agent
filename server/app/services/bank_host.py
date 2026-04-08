@@ -6,7 +6,10 @@ from ..repositories.banking import BankingRepository
 from ..schemas.common import SpendingCategory, TransactionItem
 from ..schemas.dashboard import DashboardResponse, TransactionsResponse
 from ..schemas.external_intelligence import ExternalIntelligenceReport
+from ..schemas.risk import RiskClassificationPayload
 from ..schemas.transfer import (
+    TransferCancelRequest,
+    TransferCancelResponse,
     ExplainNode,
     ExplainPack,
     ExplainScoreBreakdown,
@@ -18,6 +21,7 @@ from ..schemas.transfer import (
     TransferSecondaryCheckResponse,
 )
 from .external_intelligence import get_external_intelligence_service
+from .pii_masker import PiiMasker
 from .risk_engine import RiskAssessment, RiskEngine, RiskInput
 from .risk_knowledge_base import get_risk_knowledge_base_service
 
@@ -79,6 +83,23 @@ class BankHostService:
     ) -> TransferPrecheckResponse:
         common_cities = self._common_cities()
         payee = self.repository.find_payee(request.payee_name)
+        confirmation_token = self.repository.build_confirmation_token()
+        self._write_trace_event(
+            confirmation_token=confirmation_token,
+            event_type="precheck_started",
+            stage="precheck",
+            decision="pending",
+            risk_level="pending",
+            final_risk=0.0,
+            payload={
+                "payee_name": request.payee_name,
+                "amount": request.amount,
+                "current_city": request.context.current_city,
+                "recent_page": request.context.recent_page,
+                "last_action": request.context.last_action,
+                "semantic_summary": PiiMasker.mask_text(request.context.semantic_summary),
+            },
+        )
         external_intelligence = self.screen_external_intelligence(request.payee_name)
 
         is_known_payee = payee is not None
@@ -98,6 +119,7 @@ class BankHostService:
             common_cities=common_cities,
             is_known_payee=is_known_payee,
         )
+        c_match = self._derive_c_match(risk_classification)
         assessment = self.risk_engine.assess(
             RiskInput(
                 payee_name=request.payee_name,
@@ -124,6 +146,7 @@ class BankHostService:
                 input_pause_count=request.context.input_pause_count,
                 input_duration_ms=request.context.input_duration_ms,
                 extra_signals=request.context.extra_signals,
+                c_match=c_match,
             )
         )
         assistant_message = self._build_transfer_message(request, assessment)
@@ -143,6 +166,7 @@ class BankHostService:
             final_risk=assessment.final_risk,
             reasons=assessment.reasons,
             assistant_message=assistant_message,
+            confirmation_token=confirmation_token,
         )
         self.repository.create_risk_event(
             payee_name=request.payee_name,
@@ -156,6 +180,25 @@ class BankHostService:
             g_dynamic=assessment.g_dynamic,
             final_risk=assessment.final_risk,
             reasons=assessment.reasons,
+        )
+        self._write_trace_event(
+            confirmation_token=token,
+            event_type="precheck_decided",
+            stage="precheck",
+            decision=assessment.decision,
+            risk_level=assessment.risk_level,
+            final_risk=assessment.final_risk,
+            payload={
+                "risk_category": risk_classification.risk_category,
+                "classification_risk_level": risk_classification.risk_level,
+                "matched_keywords": risk_classification.matched_keywords,
+                "matched_scenarios": risk_classification.matched_scenarios,
+                "external_intelligence_status": external_intelligence.status,
+                "external_intelligence_hits": [
+                    hit.summary for hit in external_intelligence.hits
+                ],
+                "reasons": assessment.reasons,
+            },
         )
         explain_pack = self._build_precheck_explain_pack(
             assessment=assessment,
@@ -184,7 +227,65 @@ class BankHostService:
     def confirm_transfer(
         self, request: TransferConfirmRequest
     ) -> TransferConfirmResponse:
+        transfer = self.repository.get_transfer_record(request.confirmation_token)
+        if transfer is None:
+            raise ValueError("未找到待确认转账，或该转账已处理完成。")
+        if transfer["status"] != "pending":
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="confirm",
+                decision=transfer.get("decision"),
+                risk_level=transfer.get("risk_level"),
+                final_risk=float(transfer.get("final_risk") or 0.0),
+                payload={
+                    "reason": "non_pending_status",
+                    "status": transfer["status"],
+                },
+            )
+            raise ValueError("未找到待确认转账，或该转账已处理完成。")
+        if transfer["decision"] == "block":
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="confirm",
+                decision=transfer["decision"],
+                risk_level=transfer["risk_level"],
+                final_risk=float(transfer["final_risk"]),
+                payload={"reason": "precheck_blocked"},
+            )
+            raise ValueError("该转账已被风控拦截，无法继续确认。")
+        if (
+            transfer["decision"] == "interrogate"
+            and transfer.get("secondary_decision") != "pass_secondary"
+        ):
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="confirm",
+                decision=transfer.get("secondary_decision") or transfer["decision"],
+                risk_level=transfer["risk_level"],
+                final_risk=float(transfer.get("secondary_risk") or transfer["final_risk"]),
+                payload={
+                    "reason": "secondary_not_passed",
+                    "secondary_decision": transfer.get("secondary_decision"),
+                },
+            )
+            raise ValueError("该转账尚未通过二次校验，无法继续确认。")
         payload = self.repository.commit_transfer(request.confirmation_token)
+        self._write_trace_event(
+            confirmation_token=request.confirmation_token,
+            event_type="transfer_confirmed",
+            stage="confirm",
+            decision=transfer.get("secondary_decision") or transfer["decision"],
+            risk_level=transfer["risk_level"],
+            final_risk=float(transfer.get("secondary_risk") or transfer["final_risk"]),
+            payload={
+                "payee_name": transfer["payee_name"],
+                "amount": float(transfer["amount"]),
+                "status": "committed",
+            },
+        )
         account = payload["account"]
         latest_transaction = TransactionItem(
             **{
@@ -201,13 +302,117 @@ class BankHostService:
             latest_transaction=latest_transaction,
         )
 
+    # HIRD-E: 业务执行层，负责显式取消待确认交易，避免与普通关闭弹窗混淆。
+    def cancel_transfer(
+        self, request: TransferCancelRequest
+    ) -> TransferCancelResponse:
+        transfer = self.repository.get_transfer_record(request.confirmation_token)
+        if transfer is None:
+            raise ValueError("未找到对应转账记录。")
+        if transfer["status"] != "pending":
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="cancel",
+                decision=transfer.get("decision"),
+                risk_level=transfer.get("risk_level"),
+                final_risk=float(transfer.get("final_risk") or 0.0),
+                payload={
+                    "reason": "non_pending_status",
+                    "status": transfer["status"],
+                },
+            )
+            raise ValueError("该转账已非待确认状态，无法取消。")
+        payload = self.repository.cancel_pending_transfer(request.confirmation_token)
+        self._write_trace_event(
+            confirmation_token=request.confirmation_token,
+            event_type="transfer_cancelled",
+            stage="cancel",
+            decision=transfer["decision"],
+            risk_level=transfer["risk_level"],
+            final_risk=float(transfer["final_risk"]),
+            payload={
+                "payee_name": transfer["payee_name"],
+                "amount": float(transfer["amount"]),
+                "cancel_stage": self._cancel_stage(transfer),
+                "secondary_decision": transfer.get("secondary_decision"),
+                "status": "cancelled",
+            },
+        )
+        return TransferCancelResponse(
+            success=True,
+            status=payload["status"],
+            confirmation_token=payload["confirmation_token"],
+            assistant_message=(
+                f"已取消向 {payload['payee_name']} 转账 {payload['amount']:.2f} 元的待确认交易。"
+            ),
+        )
+
     # HIRD-D: 治理层，负责执行二次质询、落库审计信息并返回复核结果。
     def secondary_check_transfer(
         self, request: TransferSecondaryCheckRequest
     ) -> TransferSecondaryCheckResponse:
+        transfer_status = self.repository.get_transfer_status(request.confirmation_token)
+        if transfer_status is None:
+            raise ValueError("未找到对应转账记录。")
+        transfer = self.repository.get_transfer_record(request.confirmation_token)
+        if transfer_status != "pending":
+            if transfer is not None:
+                self._write_trace_event(
+                    confirmation_token=request.confirmation_token,
+                    event_type="transfer_rejected",
+                    stage="secondary-check",
+                    decision=transfer.get("decision"),
+                    risk_level=transfer.get("risk_level"),
+                    final_risk=float(transfer.get("final_risk") or 0.0),
+                    payload={
+                        "reason": "non_pending_status",
+                        "status": transfer_status,
+                    },
+                )
+            raise ValueError("该转账已非待确认状态，无法执行二次校验。")
+
         pending = self.repository.get_pending_transfer(request.confirmation_token)
+        if pending.get("secondary_decision") not in {None, "", "pending"}:
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="secondary-check",
+                decision=pending.get("secondary_decision") or pending["decision"],
+                risk_level=pending["risk_level"],
+                final_risk=float(pending.get("secondary_risk") or pending["final_risk"]),
+                payload={
+                    "reason": "duplicate_secondary_submission",
+                    "secondary_decision": pending.get("secondary_decision"),
+                },
+            )
+            raise ValueError("二次质询本轮仅允许一次提交，请重新发起转账或取消交易。")
         if pending["decision"] == "block":
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="transfer_rejected",
+                stage="secondary-check",
+                decision=pending["decision"],
+                risk_level=pending["risk_level"],
+                final_risk=float(pending["final_risk"]),
+                payload={"reason": "precheck_blocked"},
+            )
             raise ValueError("该转账已被预检拦截，无需执行二次校验。")
+
+        self._write_trace_event(
+            confirmation_token=request.confirmation_token,
+            event_type="secondary_submitted",
+            stage="secondary-check",
+            decision=pending["decision"],
+            risk_level=pending["risk_level"],
+            final_risk=float(pending["final_risk"]),
+            payload={
+                "user_reply": PiiMasker.mask_text(request.user_reply),
+                "semantic_summary": PiiMasker.mask_text(pending["semantic_summary"]),
+            },
+        )
+
+        policy_version = "secondary_policy_v1"
 
         if pending["decision"] == "pass":
             external_intelligence = self.screen_external_intelligence(
@@ -231,6 +436,29 @@ class BankHostService:
                 risk_level=risk_classification.risk_level,
                 external_intelligence=external_intelligence,
             )
+            self.repository.update_secondary_check(
+                confirmation_token=request.confirmation_token,
+                secondary_decision="pass_secondary",
+                secondary_risk=float(pending["final_risk"]),
+                secondary_reasons=["该交易为放行路径，无需二次质询。"],
+                secondary_question="放行路径无需二次质询。",
+                secondary_reply=request.user_reply,
+                policy_version=policy_version,
+            )
+            self._write_trace_event(
+                confirmation_token=request.confirmation_token,
+                event_type="secondary_decided",
+                stage="secondary-check",
+                decision="pass_secondary",
+                risk_level=pending["risk_level"],
+                final_risk=float(pending["final_risk"]),
+                payload={
+                    "risk_category": risk_classification.risk_category,
+                    "risk_level": risk_classification.risk_level,
+                    "policy_version": policy_version,
+                    "semantic_red_flags": [],
+                },
+            )
             return TransferSecondaryCheckResponse(
                 secondary_decision="pass_secondary",
                 reasons=["该交易为放行路径，无需二次质询。"],
@@ -244,7 +472,6 @@ class BankHostService:
 
         from .agent_service import get_agent_service
 
-        policy_version = "secondary_policy_v1"
         anchor_classification = self.risk_knowledge.classify_text(
             text=pending["semantic_summary"],
             amount=float(pending["amount"]),
@@ -309,6 +536,20 @@ class BankHostService:
             risk_category=risk_classification.risk_category,
             risk_level=risk_classification.risk_level,
             external_intelligence=external_intelligence,
+        )
+        self._write_trace_event(
+            confirmation_token=request.confirmation_token,
+            event_type="secondary_decided",
+            stage="secondary-check",
+            decision=result.decision,
+            risk_level="high" if result.decision == "block_secondary" else "medium",
+            final_risk=result.risk,
+            payload={
+                "semantic_red_flags": result.semantic_red_flags,
+                "risk_category": risk_classification.risk_category,
+                "risk_level": risk_classification.risk_level,
+                "policy_version": policy_version,
+            },
         )
         return TransferSecondaryCheckResponse(
             secondary_decision=result.decision,
@@ -603,9 +844,46 @@ class BankHostService:
     ) -> str:
         return semantic_summary.strip()
 
+    def _derive_c_match(self, classification: RiskClassificationPayload) -> float:
+        base_map = {"high": 0.3, "medium": 0.2, "low": 0.1}
+        base = base_map.get(classification.risk_level.lower(), 0.2)
+        high_phrase_bonus = min(len(classification.high_risk_phrase_hits) * 0.25, 0.7)
+        block_hint_boost = 0.4 if classification.block_hint else 0.0
+        base = min(base + high_phrase_bonus + block_hint_boost, 1.0)
+        if classification.block_hint:
+            base = max(base, 0.7)
+        return base
+
+    def _cancel_stage(self, transfer: dict) -> str:
+        secondary_decision = transfer.get("secondary_decision")
+        if secondary_decision not in {None, "", "pending"}:
+            return "after_secondary_check"
+        return "after_precheck"
+
+    def _write_trace_event(
+        self,
+        *,
+        confirmation_token: str,
+        event_type: str,
+        stage: str,
+        decision: str | None,
+        risk_level: str | None,
+        final_risk: float,
+        payload: dict,
+    ) -> None:
+        self.repository.create_trace_event(
+            trace_id=confirmation_token,
+            confirmation_token=confirmation_token,
+            event_type=event_type,
+            stage=stage,
+            decision=decision,
+            risk_level=risk_level,
+            final_risk=final_risk,
+            payload=payload,
+        )
+
 
 # HIRD-D: 治理层，负责提供银行宿主服务的单例入口。
 @lru_cache(maxsize=1)
 def get_bank_host_service() -> BankHostService:
     return BankHostService()
-

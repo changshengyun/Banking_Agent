@@ -1,14 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
 
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..schemas.common import SuggestedAction, ToolUsage
-
-
-def _normalize(text: str) -> str:
-    return text.strip().lower().replace(" ", "")
 
 
 @dataclass(frozen=True)
@@ -18,6 +14,9 @@ class SecondaryResult:
     reasons: list[str]
     assistant_message: str
     semantic_red_flags: list[str]
+    domain_output: dict[str, object] | None = None
+    deep_output: dict[str, object] | None = None
+    semantic_output: dict[str, object] | None = None
 
 
 from .bank_host import BankHostService, get_bank_host_service
@@ -81,6 +80,58 @@ GENERIC_EVASIVE_PATTERNS: tuple[str, ...] = (
     "不用问",
 )
 
+NEGATION_CUES: tuple[str, ...] = (
+    "不涉及",
+    "未涉及",
+    "不会",
+    "不",
+    "没有",
+    "没",
+    "无",
+    "并非",
+    "不是",
+    "拒绝",
+    "无需",
+    "不用",
+    "不要",
+)
+
+LOW_RISK_RELATION_TERMS: tuple[str, ...] = (
+    "朋友",
+    "同事",
+    "家人",
+    "父母",
+    "亲戚",
+    "同学",
+    "房东",
+    "线下认识",
+    "认识",
+)
+
+LOW_RISK_PURPOSE_TERMS: tuple[str, ...] = (
+    "还款",
+    "借款",
+    "房租",
+    "生活费",
+    "工资",
+    "学费",
+    "货款",
+    "报销",
+    "订单",
+    "押金",
+)
+
+HIGH_RISK_TERMS: tuple[str, ...] = (
+    "验证码",
+    "安全账户",
+    "监管账户",
+    "屏幕共享",
+    "共享屏幕",
+    "远程控制",
+    "verificationcode",
+    "safeaccount",
+)
+
 
 class AgentService:
     def __init__(
@@ -94,7 +145,13 @@ class AgentService:
         self.risk_knowledge = risk_knowledge or get_risk_knowledge_base_service()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
+        if not request.messages:
+            raise ValueError("无效输入，请按照要求输入")
+
         latest_message = request.messages[-1].content.strip()
+        if not latest_message:
+            raise ValueError("无效输入，请按照要求输入")
+
         self.bank_host.repository.add_chat_message(
             request.context.session_id,
             "user",
@@ -124,7 +181,6 @@ class AgentService:
         matched_scenarios: list[str],
         follow_up_questions: list[str],
     ) -> SecondaryResult:
-        # HIRD-G: 治理层，进入二次拦截逻辑前强制对摘要脱敏
         semantic_summary = PiiMasker.mask_text(semantic_summary)
         user_reply = PiiMasker.mask_text(user_reply)
 
@@ -135,7 +191,26 @@ class AgentService:
         )
         semantic_red_flags = self._detect_semantic_red_flags(user_reply)
         if semantic_red_flags:
-            return self._build_red_flag_block_result(semantic_red_flags)
+            return self._build_red_flag_block_result(
+                semantic_red_flags,
+                risk_category=risk_category,
+                risk_level=risk_level,
+                matched_keywords=matched_keywords,
+                matched_scenarios=matched_scenarios,
+                follow_up_questions=follow_up_questions,
+            )
+
+        local_result = self._build_local_low_risk_result(
+            user_reply=user_reply,
+            risk_category=risk_category,
+            risk_level=risk_level,
+            matched_keywords=matched_keywords,
+            matched_scenarios=matched_scenarios,
+            follow_up_questions=follow_up_questions,
+            verification_points=verification_points,
+        )
+        if local_result is not None:
+            return local_result
 
         if self._is_irrelevant_reply(
             user_reply=user_reply,
@@ -148,28 +223,71 @@ class AgentService:
                 reasons=["用户回复未覆盖当前风险场景的关键核验点", "需要继续补充与风险问题直接相关的说明"],
                 assistant_message="当前说明与核验问题不匹配，请继续补充与风险问题直接相关的解释。",
                 semantic_red_flags=[],
+                **self._build_agent_outputs(
+                    risk_category=risk_category,
+                    risk_level=risk_level,
+                    matched_keywords=matched_keywords,
+                    matched_scenarios=matched_scenarios,
+                    follow_up_questions=follow_up_questions,
+                    verification_points=verification_points,
+                    semantic_red_flags=[],
+                    final_risk=0.72,
+                ),
             )
 
-        system_prompt = self._build_secondary_system_prompt()
-        user_prompt = self._build_secondary_user_prompt(
-            user_reply=user_reply,
-            semantic_summary=semantic_summary,
+        try:
+            payload = self.llm_gateway.generate_json_sync(
+                system_prompt=self._build_secondary_system_prompt(),
+                user_prompt=self._build_secondary_user_prompt(
+                    user_reply=user_reply,
+                    semantic_summary=semantic_summary,
+                    risk_category=risk_category,
+                    risk_level=risk_level,
+                    matched_keywords=matched_keywords,
+                    matched_scenarios=matched_scenarios,
+                    follow_up_questions=follow_up_questions,
+                    verification_points=verification_points,
+                ),
+                temperature=0.1,
+            )
+            parsed = self._parse_secondary_json(payload)
+        except ValueError:
+            return self._build_llm_unavailable_result(
+                user_reply=user_reply,
+                risk_category=risk_category,
+                risk_level=risk_level,
+                matched_keywords=matched_keywords,
+                matched_scenarios=matched_scenarios,
+                follow_up_questions=follow_up_questions,
+                verification_points=verification_points,
+            )
+        if parsed["semantic_red_flags"] and parsed["decision"] != Decision.BLOCK_SECONDARY:
+            return self._build_red_flag_block_result(
+                parsed["semantic_red_flags"],
+                risk_category=risk_category,
+                risk_level=risk_level,
+                matched_keywords=matched_keywords,
+                matched_scenarios=matched_scenarios,
+                follow_up_questions=follow_up_questions,
+            )
+        outputs = self._build_agent_outputs(
             risk_category=risk_category,
             risk_level=risk_level,
             matched_keywords=matched_keywords,
             matched_scenarios=matched_scenarios,
             follow_up_questions=follow_up_questions,
             verification_points=verification_points,
+            semantic_red_flags=parsed["semantic_red_flags"],
+            final_risk=parsed["risk"],
         )
-        payload = self.llm_gateway.generate_json_sync(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.1,
+        return SecondaryResult(
+            decision=parsed["decision"],
+            risk=parsed["risk"],
+            reasons=parsed["reasons"],
+            assistant_message=parsed["assistant_message"],
+            semantic_red_flags=parsed["semantic_red_flags"],
+            **outputs,
         )
-        result = self._parse_secondary_json(payload)
-        if result.semantic_red_flags and result.decision != "block_secondary":
-            return self._build_red_flag_block_result(result.semantic_red_flags)
-        return result
 
     async def _live_chat_response(
         self,
@@ -188,37 +306,36 @@ class AgentService:
             is_known_payee=True,
         )
 
-        system_prompt = (
-            "你是手机银行内的风控助手。"
-            "只能基于提供的银行上下文和风险分类结果回答。"
-            "回答要简洁、明确、可执行，不要杜撰没有提供的账户事实。"
-            "必须输出严格 JSON，不要输出额外文本。"
-        )
-        user_prompt = (
-            "请根据下面上下文回答用户问题，并生成建议动作。返回 JSON：\n"
-            "{"
-            '"assistant_message":"给用户的回复",'
-            '"suggested_actions":[{"label":"按钮文案","action":"动作标识"}]'
-            "}\n"
-            f"账户摘要：活期 {dashboard.cash_balance:.2f} 元，理财 {dashboard.wealth_balance:.2f} 元，总资产 {dashboard.total_assets:.2f} 元。\n"
-            f"账单摘要：{bill_summary}\n"
-            f"最近风控：{risk_summary}\n"
-            f"风险分类：{classification.risk_category} / {classification.risk_level}\n"
-            f"分类分析：{classification.analysis}\n"
-            f"建议追问：{'；'.join(classification.follow_up_questions) if classification.follow_up_questions else '无'}\n"
-            f"用户问题：{latest_message}"
-        )
         payload = await self.llm_gateway.generate_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            system_prompt=(
+                "你是手机银行内的风控助手。"
+                "只能基于提供的银行上下文和风险分类结果回答。"
+                "回答要简洁、明确、可执行，不要杜撰没有提供的账户事实。"
+                "必须输出严格 JSON，不要输出额外文本。"
+            ),
+            user_prompt=(
+                "请根据下面上下文回答用户问题，并生成建议动作。返回 JSON：\n"
+                "{"
+                '"assistant_message":"给用户的回复",'
+                '"suggested_actions":[{"label":"按钮文案","action":"动作标识"}]'
+                "}\n"
+                f"账户摘要：活期 {dashboard.cash_balance:.2f} 元，理财 {dashboard.wealth_balance:.2f} 元，总资产 {dashboard.total_assets:.2f} 元。\n"
+                f"账单摘要：{bill_summary}\n"
+                f"最近风控：{risk_summary}\n"
+                f"风险分类：{classification.risk_category} / {classification.risk_level}\n"
+                f"分类分析：{classification.analysis}\n"
+                f"建议追问：{'；'.join(classification.follow_up_questions) if classification.follow_up_questions else '无'}\n"
+                f"用户问题：{latest_message}"
+            ),
             temperature=0.2,
         )
         assistant_message = str(payload.get("assistant_message", "")).strip()
         if not assistant_message:
             raise ValueError("在线模型返回格式异常，缺少 assistant_message。")
 
-        actions_raw = payload.get("suggested_actions", [])
-        suggested_actions = self._parse_suggested_actions(actions_raw)
+        suggested_actions = self._parse_suggested_actions(
+            payload.get("suggested_actions", [])
+        )
         if not suggested_actions:
             suggested_actions = [
                 SuggestedAction(label="返回首页", action="refresh_dashboard")
@@ -334,25 +451,226 @@ class AgentService:
         )
         return self._unique_strings(merged_checks)
 
+    def _build_agent_outputs(
+        self,
+        *,
+        risk_category: str,
+        risk_level: str,
+        matched_keywords: list[str],
+        matched_scenarios: list[str],
+        follow_up_questions: list[str],
+        verification_points: list[str],
+        semantic_red_flags: list[str],
+        final_risk: float,
+    ) -> dict[str, dict[str, object]]:
+        confidence = min(1.0, len(matched_keywords) * 0.06 + len(matched_scenarios) * 0.1)
+        generated_question = follow_up_questions[0] if follow_up_questions else "请说明你与收款人的关系与用途。"
+        base_c_match = {
+            "high": 0.75,
+            "medium": 0.45,
+            "low": 0.2,
+        }.get(risk_level.strip().lower(), 0.3)
+        keyword_score = min(1.0, len(matched_keywords) * 0.04)
+        scenario_score = min(1.0, len(matched_scenarios) * 0.15)
+        c_match = min(1.0, base_c_match + keyword_score + scenario_score)
+        reasoning = (
+            f"关键词命中 {len(matched_keywords)} 条，场景命中 {len(matched_scenarios)} 条，"
+            f"核验点 {len(verification_points)} 条。"
+        )
+        domain_output = {
+            "predicted_category": risk_category or "未知",
+            "confidence": round(confidence, 3),
+            "generated_question": generated_question,
+            "reasoning": reasoning,
+        }
+        deep_output = {
+            "scenario_match": risk_category or "未命中场景",
+            "c_match": round(c_match, 3),
+            "reasoning": reasoning,
+        }
+        semantic_output = {
+            "s_dev": round(max(0.0, min(1.0, final_risk)), 3),
+            "risk_flags": semantic_red_flags,
+            "reasoning": "LLM 二次校验综合风险评分",
+        }
+        return {
+            "domain_output": domain_output,
+            "deep_output": deep_output,
+            "semantic_output": semantic_output,
+        }
+
     def _detect_semantic_red_flags(self, user_reply: str) -> list[str]:
         normalized_reply = self._normalize_text(user_reply)
         red_flags: list[str] = []
         for label, phrases in SEMANTIC_RED_FLAG_RULES.items():
-            if any(self._normalize_text(phrase) in normalized_reply for phrase in phrases):
+            if any(self._contains_affirmative_phrase(normalized_reply, phrase) for phrase in phrases):
                 red_flags.append(label)
         return self._unique_strings(red_flags)
+
+    def _build_local_low_risk_result(
+        self,
+        *,
+        user_reply: str,
+        risk_category: str,
+        risk_level: str,
+        matched_keywords: list[str],
+        matched_scenarios: list[str],
+        follow_up_questions: list[str],
+        verification_points: list[str],
+    ) -> SecondaryResult | None:
+        if not self._looks_like_low_risk_explanation(user_reply):
+            return None
+        outputs = self._build_agent_outputs(
+            risk_category=risk_category,
+            risk_level=risk_level,
+            matched_keywords=matched_keywords,
+            matched_scenarios=matched_scenarios,
+            follow_up_questions=follow_up_questions,
+            verification_points=verification_points,
+            semantic_red_flags=[],
+            final_risk=0.28,
+        )
+        return SecondaryResult(
+            decision=Decision.PASS_SECONDARY,
+            risk=0.28,
+            reasons=["用户说明覆盖了关系与用途，并明确否认验证码/安全账户/屏幕共享等高危操作。"],
+            assistant_message="说明已通过本地核验，本次可继续确认转账。",
+            semantic_red_flags=[],
+            **outputs,
+        )
+
+    def _build_llm_unavailable_result(
+        self,
+        *,
+        user_reply: str,
+        risk_category: str,
+        risk_level: str,
+        matched_keywords: list[str],
+        matched_scenarios: list[str],
+        follow_up_questions: list[str],
+        verification_points: list[str],
+    ) -> SecondaryResult:
+        if self._looks_like_low_risk_explanation(user_reply):
+            local_pass = self._build_local_low_risk_result(
+                user_reply=user_reply,
+                risk_category=risk_category,
+                risk_level=risk_level,
+                matched_keywords=matched_keywords,
+                matched_scenarios=matched_scenarios,
+                follow_up_questions=follow_up_questions,
+                verification_points=verification_points,
+            )
+            if local_pass is not None:
+                return local_pass
+        outputs = self._build_agent_outputs(
+            risk_category=risk_category,
+            risk_level=risk_level,
+            matched_keywords=matched_keywords,
+            matched_scenarios=matched_scenarios,
+            follow_up_questions=follow_up_questions,
+            verification_points=verification_points,
+            semantic_red_flags=[],
+            final_risk=0.72,
+        )
+        return SecondaryResult(
+            decision=Decision.INTERROGATE,
+            risk=0.72,
+            reasons=["在线语义服务暂不可用，当前说明未达到自动放行条件。"],
+            assistant_message="系统正在忙，请稍后重试或取消交易后重新发起。",
+            semantic_red_flags=[],
+            **outputs,
+        )
+
+    def _looks_like_low_risk_explanation(self, user_reply: str) -> bool:
+        normalized_reply = self._normalize_text(user_reply)
+        relation_hits = sum(
+            1
+            for term in LOW_RISK_RELATION_TERMS
+            if self._contains_affirmative_phrase(normalized_reply, term)
+        )
+        purpose_hits = sum(
+            1
+            for term in LOW_RISK_PURPOSE_TERMS
+            if self._contains_affirmative_phrase(normalized_reply, term)
+        )
+        negated_high_risk_hits = sum(
+            1
+            for term in HIGH_RISK_TERMS
+            if self._contains_negated_phrase(normalized_reply, term)
+        )
+        return relation_hits > 0 and purpose_hits > 0 and negated_high_risk_hits > 0
+
+    def _contains_affirmative_phrase(self, normalized_reply: str, phrase: str) -> bool:
+        normalized_phrase = self._normalize_text(phrase)
+        for start in self._find_phrase_positions(normalized_reply, normalized_phrase):
+            if not self._is_negated_occurrence(
+                text=normalized_reply, start=start, phrase=normalized_phrase
+            ):
+                return True
+        return False
+
+    def _contains_negated_phrase(self, normalized_reply: str, phrase: str) -> bool:
+        normalized_phrase = self._normalize_text(phrase)
+        for start in self._find_phrase_positions(normalized_reply, normalized_phrase):
+            if self._is_negated_occurrence(
+                text=normalized_reply, start=start, phrase=normalized_phrase
+            ):
+                return True
+        return False
+
+    def _find_phrase_positions(self, text: str, phrase: str) -> list[int]:
+        positions: list[int] = []
+        if not phrase:
+            return positions
+        start = 0
+        while True:
+            index = text.find(phrase, start)
+            if index < 0:
+                break
+            positions.append(index)
+            start = index + len(phrase)
+        return positions
+
+    def _is_negated_occurrence(self, *, text: str, start: int, phrase: str) -> bool:
+        left_window = text[max(0, start - 24):start]
+        right_window = text[start + len(phrase): start + len(phrase) + 8]
+        return any(cue in left_window for cue in NEGATION_CUES) or any(
+            right_window.startswith(cue) for cue in ("没有", "没", "未", "不")
+        )
 
     def _build_red_flag_block_result(
         self,
         semantic_red_flags: list[str],
+        *,
+        risk_category: str,
+        risk_level: str,
+        matched_keywords: list[str],
+        matched_scenarios: list[str],
+        follow_up_questions: list[str],
     ) -> SecondaryResult:
         flags_text = "；".join(semantic_red_flags)
+        verification_points = self._secondary_verification_points(
+            risk_category=risk_category,
+            matched_scenarios=matched_scenarios,
+            follow_up_questions=follow_up_questions,
+        )
+        outputs = self._build_agent_outputs(
+            risk_category=risk_category,
+            risk_level=risk_level,
+            matched_keywords=matched_keywords,
+            matched_scenarios=matched_scenarios,
+            follow_up_questions=follow_up_questions,
+            verification_points=verification_points,
+            semantic_red_flags=semantic_red_flags,
+            final_risk=1.0,
+        )
         return SecondaryResult(
             decision=Decision.BLOCK_SECONDARY,
             risk=0.98,
             reasons=[f"命中高风险语义模式：{flags_text}", "用户说明已触发强制阻断规则"],
             assistant_message="检测到高风险语义信号，本次转账无法继续，请立即停止操作。",
             semantic_red_flags=semantic_red_flags,
+            **outputs,
         )
 
     def _is_irrelevant_reply(
@@ -365,7 +683,10 @@ class AgentService:
         normalized_reply = self._normalize_text(user_reply)
         if not normalized_reply:
             return True
-        if any(self._normalize_text(pattern) in normalized_reply for pattern in GENERIC_EVASIVE_PATTERNS):
+        if any(
+            self._normalize_text(pattern) in normalized_reply
+            for pattern in GENERIC_EVASIVE_PATTERNS
+        ):
             return True
 
         reply_tokens = self._extract_relevant_tokens(user_reply)
@@ -415,12 +736,16 @@ class AgentService:
             "还款",
         }
         normalized_text = self._normalize_text(text)
-        return {keyword for keyword in keywords if self._normalize_text(keyword) in normalized_text}
+        return {
+            keyword
+            for keyword in keywords
+            if self._normalize_text(keyword) in normalized_text
+        }
 
     def _normalize_text(self, text: str) -> str:
         return text.strip().lower().replace(" ", "")
 
-    def _parse_suggested_actions(self, actions_raw) -> list[SuggestedAction]:
+    def _parse_suggested_actions(self, actions_raw: object) -> list[SuggestedAction]:
         actions: list[SuggestedAction] = []
         if not isinstance(actions_raw, list):
             return actions
@@ -437,9 +762,16 @@ class AgentService:
     def _parse_secondary_json(
         self,
         payload: dict,
-    ) -> SecondaryResult:
-        decision = str(payload.get("secondary_decision", "")).strip()
-        if decision not in {Decision.PASS_SECONDARY, Decision.INTERROGATE, Decision.BLOCK_SECONDARY}:
+    ) -> dict[str, object]:
+        # 同时兼容 secondary_decision 和 decision 两个键名
+        decision = str(
+            payload.get("secondary_decision") or payload.get("decision", "")
+        ).strip()
+        if decision not in {
+            Decision.PASS_SECONDARY,
+            Decision.INTERROGATE,
+            Decision.BLOCK_SECONDARY,
+        }:
             raise ValueError("二次校验返回缺少有效 secondary_decision。")
 
         try:
@@ -466,13 +798,14 @@ class AgentService:
         else:
             semantic_red_flags = []
 
-        return SecondaryResult(
-            decision=Decision(decision),
-            risk=max(0.0, min(1.0, risk)),
-            reasons=reasons,
-            assistant_message=assistant_message,
-            semantic_red_flags=semantic_red_flags,
-        )
+        decision_enum = Decision(decision)
+        return {
+            "decision": decision_enum.value,
+            "risk": max(0.0, min(1.0, risk)),
+            "reasons": reasons,
+            "assistant_message": assistant_message,
+            "semantic_red_flags": semantic_red_flags,
+        }
 
     def _unique_strings(self, values: list[str]) -> list[str]:
         result: list[str] = []
@@ -486,7 +819,6 @@ class AgentService:
         return result
 
 
-# 推理层，负责提供 Agent 服务的单例入口。
 @lru_cache(maxsize=1)
 def get_agent_service() -> AgentService:
     return AgentService()

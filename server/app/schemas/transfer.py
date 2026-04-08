@@ -64,6 +64,17 @@ class TransferConfirmResponse(BaseModel):
     latest_transaction: TransactionItem
 
 
+class TransferCancelRequest(BaseModel):
+    confirmation_token: str
+
+
+class TransferCancelResponse(BaseModel):
+    success: bool
+    status: str
+    confirmation_token: str
+    assistant_message: str
+
+
 class TransferSecondaryCheckRequest(BaseModel):
     confirmation_token: str
     user_reply: str = Field(min_length=1, max_length=500)

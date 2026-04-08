@@ -81,6 +81,8 @@ flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
 
 更完整的手工测试样例见 [docs/risk-test-cases.md](e:/Projects/Banking_AI_Project/docs/risk-test-cases.md)。
 功能验收测试清单见 [docs/functional-test-cases.md](e:/Projects/Banking_AI_Project/docs/functional-test-cases.md)。
+V3 接口契约快照见 [docs/api-contract-v3.md](e:/Projects/Banking_AI_Project/docs/api-contract-v3.md)。
+V3->V4 开发总台账见 [development_todo.md](e:/Projects/Banking_AI_Project/development_todo.md)。
 
 ## 已实现 API
 
@@ -126,6 +128,8 @@ $env:PYTHONPATH=(Get-Location).Path
 server\.venv\Scripts\python -m pytest server\tests\test_api.py -q -p no:cacheprovider
 server\.venv\Scripts\python -m pytest server\tests\test_risk_scenarios.py -q -p no:cacheprovider
 server\.venv\Scripts\python -m pytest server\tests\test_patch2_secondary_followup.py -q -p no:cacheprovider
+server\.venv\Scripts\python -m pytest server\tests\test_v3_integration_flows.py -q -p no:cacheprovider
+server\.venv\Scripts\python server\tests\benchmark_v3_baseline.py
 ```
 
 ### 前端
@@ -136,18 +140,19 @@ flutter analyze --no-version-check
 flutter test --no-version-check
 ```
 
-## 当前验证结果
+## 当前验证结果（V3-alpha）
 
-- `V2-patch-1 / V2-patch-2 / V2-patch-3`：已全部完成，当前进入 V2 收口提交阶段
-- `server/tests/test_api.py`：14 通过
-- `server/tests/test_risk_scenarios.py`：13 通过
-- `server/tests/test_patch2_secondary_followup.py`：2 通过
-- `flutter analyze --no-version-check`：通过
-- `flutter test --no-version-check`：6 通过
-- `V2-patch-3` 已验证：
-  - 命中高风险语义时直接 `block_secondary`
-  - 无关回复不会被直接 `pass_secondary`
-  - `semantic_red_flags` 字段稳定返回
+- 后端核心回归：`46 passed`
+  - `server/tests/test_formula.py`
+  - `server/tests/test_api.py`
+  - `server/tests/test_patch2_secondary_followup.py`
+  - `server/tests/test_risk_scenarios.py`
+  - `server/tests/test_v3_integration_flows.py`
+- 前端静态检查：`flutter analyze --no-version-check lib/main.dart lib/banking_api.dart test/widget_test.dart` 通过
+- 前端关键交互回归：`flutter test --no-version-check test/widget_test.dart` 通过（10 通过）
+- 本地性能基线（TestClient）：
+  - `precheck avg 29.66ms / p95 80.60ms`
+  - `secondary-check avg 43.99ms / p95 108.76ms`
 
 ## 开发治理
 

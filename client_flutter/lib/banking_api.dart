@@ -24,6 +24,7 @@ abstract class BankingApiClient {
     required double amount,
     required ClientContextData context,
   });
+  Future<TransferCancelResult> cancelTransfer(String confirmationToken);
   Future<TransferConfirmResult> confirmTransfer(String confirmationToken);
   Future<TransferSecondaryCheckResult> secondaryCheckTransfer({
     required String confirmationToken,
@@ -88,6 +89,18 @@ class HttpBankingApiClient implements BankingApiClient {
       }),
     );
     return TransferConfirmResult.fromJson(_decode(response));
+  }
+
+  @override
+  Future<TransferCancelResult> cancelTransfer(String confirmationToken) async {
+    final response = await _client.post(
+      Uri.parse('$_baseUrl/api/v1/transfers/cancel'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+      body: jsonEncode(<String, dynamic>{
+        'confirmation_token': confirmationToken,
+      }),
+    );
+    return TransferCancelResult.fromJson(_decode(response));
   }
 
   @override
@@ -422,6 +435,29 @@ class TransferConfirmResult {
   final TransactionRecord latestTransaction;
 }
 
+class TransferCancelResult {
+  const TransferCancelResult({
+    required this.success,
+    required this.status,
+    required this.confirmationToken,
+    required this.assistantMessage,
+  });
+
+  factory TransferCancelResult.fromJson(Map<String, dynamic> json) {
+    return TransferCancelResult(
+      success: json['success'] as bool? ?? false,
+      status: json['status'] as String? ?? 'cancelled',
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      assistantMessage: json['assistant_message'] as String? ?? '',
+    );
+  }
+
+  final bool success;
+  final String status;
+  final String confirmationToken;
+  final String assistantMessage;
+}
+
 class TransferSecondaryCheckResult {
   const TransferSecondaryCheckResult({
     required this.secondaryDecision,
@@ -602,11 +638,28 @@ class ExplainPackData {
     required double finalRiskAfterSecondary,
   }) {
     final bool blocked = secondaryDecision == 'block_secondary';
-    final String level = blocked ? 'high' : riskClassification.riskLevel;
+    final bool needsStop = secondaryDecision == 'interrogate';
+    final String level =
+        blocked
+            ? 'high'
+            : needsStop
+            ? 'medium'
+            : riskClassification.riskLevel;
+    final String headline =
+        blocked
+            ? '二次校验未通过'
+            : needsStop
+            ? '二次说明未通过'
+            : '二次校验通过';
+    final String recommendedAction =
+        blocked
+            ? '建议停止转账并联系银行客服进一步核验。'
+            : needsStop
+            ? '当前转账不得继续确认，请关闭或取消交易。'
+            : '可以继续执行转账确认。';
     return ExplainPackData(
-      headline: blocked ? '二次校验未通过' : '二次校验通过',
-      recommendedAction:
-          blocked ? '建议停止转账并联系银行客服进一步核验。' : '可以继续执行转账确认。',
+      headline: headline,
+      recommendedAction: recommendedAction,
       scoreBreakdown: RiskScoreBreakdownData(
         flagS: 0,
         gBehavior: 0,

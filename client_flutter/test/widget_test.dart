@@ -57,6 +57,98 @@ void main() {
     expect(find.textContaining('Decision'), findsOneWidget);
   });
 
+  testWidgets('shows cancel transfer action in secondary dialog', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient();
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('取消交易'), findsOneWidget);
+
+    await tester.tap(find.text('取消交易'));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.cancelCalled, isTrue);
+    expect(apiClient.confirmCallCount, 0);
+  });
+
+  testWidgets('shows unified invalid input message for empty ai input', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.smart_toy_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.pump();
+
+    expect(find.text('无效输入，请按照要求输入'), findsOneWidget);
+  });
+
+  testWidgets('single-round interrogate does not continue to confirm', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      secondaryResponse: const TransferSecondaryCheckResult(
+        secondaryDecision: 'interrogate',
+        reasons: <String>['need more evidence'],
+        finalRiskAfterSecondary: 0.66,
+        assistantMessage: 'Secondary explanation is insufficient.',
+        riskClassification: RiskClassificationData(
+          riskCategory: 'borrow_money_impersonation',
+          riskLevel: 'medium',
+          blockHint: false,
+          matchedKeywords: <String>['borrow money'],
+          matchedScenarios: <String>['borrow_money_impersonation'],
+          analysis: 'Need a more direct explanation.',
+          followUpQuestions: <String>['What is your relationship with the payee?'],
+          suggestedReplyExamples: <String>['The payee is my colleague.'],
+        ),
+        explainPack: ExplainPackData(
+          headline: 'Secondary explanation insufficient',
+          recommendedAction: 'Stop and verify before trying again.',
+          scoreBreakdown: RiskScoreBreakdownData(
+            flagS: 0.62,
+            gBehavior: 0.41,
+            gDynamic: 0.74,
+            finalRisk: 0.66,
+          ),
+          nodes: <ExplainNodeData>[
+            ExplainNodeData(
+              id: 'decision',
+              title: 'Decision',
+              level: 'medium',
+              summary: 'Still needs review',
+              detail: 'Do not continue with confirmation.',
+              score: 0.66,
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '我就是想转账。');
+    await tester.tap(find.text('提交校验'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('二次说明未通过'), findsOneWidget);
+    expect(apiClient.confirmCallCount, 0);
+  });
+
   mainDataContractTests();
 }
 
@@ -138,9 +230,78 @@ void mainDataContractTests() {
     expect(result.explainPack.scoreBreakdown.finalRisk, closeTo(0.93, 0.0001));
     expect(result.explainPack.nodes.first.score, closeTo(0.95, 0.0001));
   });
+
+  test('builds fallback explain pack for single-round interrogate payload', () {
+    final TransferSecondaryCheckResult result =
+        TransferSecondaryCheckResult.fromJson(
+      <String, dynamic>{
+        'secondary_decision': 'interrogate',
+        'reasons': <String>['need more evidence'],
+        'final_risk_after_secondary': 0.66,
+        'assistant_message': 'Secondary explanation is insufficient.',
+        'risk_classification': <String, dynamic>{
+          'risk_category': 'borrow_money_impersonation',
+          'risk_level': 'medium',
+          'block_hint': false,
+          'matched_keywords': <String>['borrow money'],
+          'matched_scenarios': <String>['borrow_money_impersonation'],
+          'analysis': 'Need a more direct explanation.',
+          'follow_up_questions': <String>['What is your relationship with the payee?'],
+          'suggested_reply_examples': <String>['The payee is my colleague.'],
+        },
+      },
+    );
+
+    expect(result.explainPack.headline, '二次说明未通过');
+    expect(result.explainPack.recommendedAction, '当前转账不得继续确认，请关闭或取消交易。');
+    expect(result.explainPack.scoreBreakdown.finalRisk, closeTo(0.66, 0.0001));
+  });
 }
 
 class _FakeApiClient implements BankingApiClient {
+  _FakeApiClient({
+    this.secondaryResponse = const TransferSecondaryCheckResult(
+      secondaryDecision: 'pass_secondary',
+      reasons: <String>['user explanation looks reasonable'],
+      finalRiskAfterSecondary: 0.36,
+      assistantMessage: 'Secondary check passed. You may continue.',
+      riskClassification: RiskClassificationData(
+        riskCategory: 'normal_transfer',
+        riskLevel: 'low',
+        blockHint: false,
+        matchedKeywords: <String>[],
+        matchedScenarios: <String>['normal_transfer'],
+        analysis: 'No high-risk scenario was matched after the explanation.',
+        followUpQuestions: <String>['What is your relationship with the payee?'],
+        suggestedReplyExamples: <String>['This is a normal repayment to a known friend.'],
+      ),
+      explainPack: ExplainPackData(
+        headline: 'Secondary check passed',
+        recommendedAction: 'Continue with transfer confirmation.',
+        scoreBreakdown: RiskScoreBreakdownData(
+          flagS: 0.0,
+          gBehavior: 0.0,
+          gDynamic: 0.0,
+          finalRisk: 0.36,
+        ),
+        nodes: <ExplainNodeData>[
+          ExplainNodeData(
+            id: 'secondary',
+            title: 'Secondary Decision Basis',
+            level: 'low',
+            summary: 'The explanation is consistent.',
+            detail: 'The relationship and purpose are coherent and do not include high-risk instructions.',
+            score: 0.36,
+          ),
+        ],
+      ),
+    ),
+  });
+
+  final TransferSecondaryCheckResult secondaryResponse;
+  bool cancelCalled = false;
+  int confirmCallCount = 0;
+
   @override
   Future<ChatReply> chat({
     required List<ChatTurn> messages,
@@ -159,6 +320,7 @@ class _FakeApiClient implements BankingApiClient {
 
   @override
   Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
+    confirmCallCount += 1;
     return TransferConfirmResult(
       success: true,
       assistantMessage: 'Transfer completed.',
@@ -176,6 +338,17 @@ class _FakeApiClient implements BankingApiClient {
         createdAt: '2026-03-16T10:00:00',
         status: 'posted',
       ),
+    );
+  }
+
+  @override
+  Future<TransferCancelResult> cancelTransfer(String confirmationToken) async {
+    cancelCalled = true;
+    return TransferCancelResult(
+      success: true,
+      status: 'cancelled',
+      confirmationToken: confirmationToken,
+      assistantMessage: 'Transfer cancelled.',
     );
   }
 
@@ -321,41 +494,6 @@ class _FakeApiClient implements BankingApiClient {
     required String userReply,
     required ClientContextData context,
   }) async {
-    return const TransferSecondaryCheckResult(
-      secondaryDecision: 'pass_secondary',
-      reasons: <String>['user explanation looks reasonable'],
-      finalRiskAfterSecondary: 0.36,
-      assistantMessage: 'Secondary check passed. You may continue.',
-      riskClassification: RiskClassificationData(
-        riskCategory: 'normal_transfer',
-        riskLevel: 'low',
-        blockHint: false,
-        matchedKeywords: <String>[],
-        matchedScenarios: <String>['normal_transfer'],
-        analysis: 'No high-risk scenario was matched after the explanation.',
-        followUpQuestions: <String>['What is your relationship with the payee?'],
-        suggestedReplyExamples: <String>['This is a normal repayment to a known friend.'],
-      ),
-      explainPack: ExplainPackData(
-        headline: 'Secondary check passed',
-        recommendedAction: 'Continue with transfer confirmation.',
-        scoreBreakdown: RiskScoreBreakdownData(
-          flagS: 0.0,
-          gBehavior: 0.0,
-          gDynamic: 0.0,
-          finalRisk: 0.36,
-        ),
-        nodes: <ExplainNodeData>[
-          ExplainNodeData(
-            id: 'secondary',
-            title: 'Secondary Decision Basis',
-            level: 'low',
-            summary: 'The explanation is consistent.',
-            detail: 'The relationship and purpose are coherent and do not include high-risk instructions.',
-            score: 0.36,
-          ),
-        ],
-      ),
-    );
+    return secondaryResponse;
   }
 }

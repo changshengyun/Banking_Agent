@@ -167,6 +167,25 @@ if bank_mcp is not None:
         return get_bank_host_service().confirm_transfer(payload).model_dump()
 
 
+    @bank_mcp.tool()
+    def get_transfer_trace(confirmation_token: str) -> dict:
+        items = get_bank_host_service().repository.get_transfer_trace(confirmation_token)
+        return {
+            "confirmation_token": confirmation_token,
+            "count": len(items),
+            "items": items,
+        }
+
+
+    @bank_mcp.tool()
+    def list_transfer_traces(limit: int = 20) -> dict:
+        items = get_bank_host_service().repository.list_transfer_traces(limit=limit)
+        return {
+            "count": len(items),
+            "items": items,
+        }
+
+
 if __name__ == "__main__":
     if bank_mcp is None:
         raise SystemExit("The mcp package is not installed.")

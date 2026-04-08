@@ -211,6 +211,32 @@ def test_precheck_by_risk_scenarios(
         _assert_explain_pack_contract(body)
 
 
+def test_precheck_negated_high_risk_terms_not_escalated() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    payload = _build_payload(
+        payee_name="小b",
+        amount=300,
+        city="上海",
+        semantic_summary="收款人是我朋友，这次是还款，不涉及验证码、安全账户或屏幕共享。",
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/transfers/precheck", json=payload)
+        assert response.status_code == 200
+
+        body = response.json()
+        assert body["decision"] == "pass"
+        assert body["risk_level"] == "low"
+        assert body["risk_classification"]["risk_category"] == "正常转账"
+        assert body["risk_classification"]["high_risk_phrase_hits"] == []
+        _assert_risk_classification_contract(body, expect_phrase_hits=False)
+        _assert_external_intelligence_contract(body)
+        _assert_explain_pack_contract(body)
+
+
 def test_block_transfer_cannot_be_confirmed() -> None:
     from fastapi.testclient import TestClient
 

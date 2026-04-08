@@ -8,6 +8,9 @@ from ..config import settings
 
 
 class LLMGateway:
+    def _timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(settings.llm_timeout_seconds)
+
     def _ensure_configured(self) -> None:
         if not settings.llm_api_key:
             raise ValueError("在线模型未配置：请设置 LLM_API_KEY 或 ARK_API_KEY。")
@@ -48,7 +51,7 @@ class LLMGateway:
     ) -> str:
         self._ensure_configured()
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=self._timeout()) as client:
                 response = await client.post(
                     self._endpoint(),
                     headers=self._headers(),
@@ -71,7 +74,7 @@ class LLMGateway:
     ) -> str:
         self._ensure_configured()
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=self._timeout()) as client:
                 response = client.post(
                     self._endpoint(),
                     headers=self._headers(),

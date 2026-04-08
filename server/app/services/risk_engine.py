@@ -39,6 +39,7 @@ class RiskInput:
     input_pause_count: Optional[int] = None
     input_duration_ms: Optional[int] = None
     extra_signals: Optional[dict[str, Union[float, int, str, bool]]] = None
+    c_match: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,10 @@ class RiskAssessment:
 
 
 class RiskEngine:
+    W_BASE = 0.3
+    DECISION_LOW_THRESHOLD = 0.3
+    DECISION_HIGH_THRESHOLD = 0.8
+
     BEHAVIOR_RISK_ACTION_HINTS = (
         "paste",
         "copy",
@@ -98,6 +103,7 @@ class RiskEngine:
             g_behavior=g_behavior,
             g_dynamic=g_dynamic,
             hard_block=hard_block,
+            c_match=payload.c_match,
         )
 
         decision = self._resolve_decision(final_risk)
@@ -283,25 +289,42 @@ class RiskEngine:
         g_behavior: float,
         g_dynamic: float,
         hard_block: bool,
+        c_match: float,
     ) -> float:
         if hard_block:
             return 1.0
-        weighted = (0.5 * flag_s) + (0.2 * g_behavior) + (0.3 * g_dynamic)
-        return self._clamp(weighted)
+        return self.apply_dynamic_formula(
+            s_static=flag_s,
+            s_dev=g_dynamic,
+            c_match=c_match,
+            w_base=self.W_BASE,
+        )
 
     def _resolve_decision(self, final_risk: float) -> Decision:
-        if final_risk >= 0.80:
+        if final_risk > self.DECISION_HIGH_THRESHOLD:
             return Decision.BLOCK
-        if final_risk >= 0.45:
+        if final_risk >= self.DECISION_LOW_THRESHOLD:
             return Decision.INTERROGATE
         return Decision.PASS
 
     def _resolve_risk_level(self, final_risk: float) -> str:
-        if final_risk >= 0.75:
+        if final_risk > self.DECISION_HIGH_THRESHOLD:
             return "high"
-        if final_risk >= 0.40:
+        if final_risk >= self.DECISION_LOW_THRESHOLD:
             return "medium"
         return "low"
 
     def _clamp(self, value: float) -> float:
         return max(0.0, min(1.0, value))
+
+    def apply_dynamic_formula(
+        self,
+        *,
+        s_static: float,
+        s_dev: float,
+        c_match: float,
+        w_base: float = 0.3,
+    ) -> float:
+        w_adj = self._clamp(w_base + (1.0 - w_base) * self._clamp(c_match))
+        final_risk = (1.0 - w_adj) * self._clamp(s_static) + w_adj * self._clamp(s_dev)
+        return self._clamp(final_risk)

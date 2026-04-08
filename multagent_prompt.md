@@ -97,7 +97,14 @@
 }
 ```
 
-## 6. 与治理层的边界
+## 6. Agent 输出契约映射（辅助治理层）
+
+- `domain_classifier` 的输出映射到 `SecondaryResult.domain_output`，要求返回 `predicted_category`、`confidence`、`generated_question` 以及简要 `reasoning` 以辅助后续剧本路由。
+- `deep_specialist` 产出 `SecondaryResult.deep_output`，最少含 `scenario_match` 和 `c_match`（0~1），并附 `reasoning` 说明为何命中当前剧本。
+- `semantic_analyst` 产出 `SecondaryResult.semantic_output`，包含 `s_dev`、`risk_flags` 与 `reasoning`（可用最终 LLM 评分或语义见解），供治理层计算 `f_final` 并判断是否触发硬拦截。
+- 以上三个结构化输出仅用于辅助治理层，不直接决定业务动作；若与 rule 引擎冲突，以 rule 结论为准。
+
+## 7. 与治理层的边界
 
 - 治理层接收 Agent 输出，但拥有唯一裁决权。
 - Prompt 的目标是提升分析质量，不是覆盖规则或越过状态机。

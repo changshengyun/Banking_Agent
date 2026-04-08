@@ -591,6 +591,11 @@ class _FakeLlmGateway:
         }
 
 
+class _FailingLlmGateway:
+    def generate_json_sync(self, *, system_prompt: str, user_prompt: str, temperature: float):
+        raise ValueError("在线模型调用失败")
+
+
 def test_secondary_intercept_prompt_includes_police_verification_points() -> None:
     from server.app.services.agent_service import AgentService
 
@@ -616,6 +621,44 @@ def test_secondary_intercept_prompt_includes_police_verification_points() -> Non
     assert "是否被要求转账核验资金" in fake_gateway.user_prompt
     assert "冒充公安检法办案" in fake_gateway.user_prompt
     assert "你是否通过官方公开电话核实过对方身份和案号？" in fake_gateway.user_prompt
+
+
+def test_secondary_intercept_negation_reply_does_not_trigger_red_flags() -> None:
+    from server.app.services.agent_service import AgentService
+
+    service = AgentService(llm_gateway=_FailingLlmGateway())
+    result = service.evaluate_secondary_intercept(
+        user_reply="收款人是我朋友，这次是还款，不涉及验证码、安全账户或屏幕共享。",
+        semantic_summary="用户补充解释。",
+        risk_category="异地大额异常转账",
+        risk_level="medium",
+        matched_keywords=["异地", "大额"],
+        matched_scenarios=["异地大额转账风险"],
+        follow_up_questions=["请说明你与收款人的关系。", "请说明本次转账用途。"],
+    )
+
+    assert result.decision == "pass_secondary"
+    assert result.semantic_red_flags == []
+    assert result.risk < 0.3
+
+
+def test_secondary_intercept_returns_interrogate_when_llm_unavailable() -> None:
+    from server.app.services.agent_service import AgentService
+
+    service = AgentService(llm_gateway=_FailingLlmGateway())
+    result = service.evaluate_secondary_intercept(
+        user_reply="收款人是同事，我已视频确认身份，请继续处理。",
+        semantic_summary="用户补充解释。",
+        risk_category="熟人借款风险",
+        risk_level="medium",
+        matched_keywords=["借钱", "周转"],
+        matched_scenarios=["冒充熟人借钱"],
+        follow_up_questions=["你是否线下认识对方？", "是否有共同联系人可确认？"],
+    )
+
+    assert result.decision == "interrogate"
+    assert result.semantic_red_flags == []
+    assert "系统正在忙" in result.assistant_message
 
 
 def test_secondary_check_blocks_police_instruction_and_returns_red_flags() -> None:
@@ -783,3 +826,290 @@ def test_secondary_check_irrelevant_reply_does_not_pass() -> None:
     _assert_secondary_semantic_red_flags_contract(body, expect_non_empty=False)
     assert body["secondary_decision"] != "pass_secondary"
     assert any("关键核验点" in reason or "直接相关" in reason for reason in body["reasons"])
+
+
+def test_secondary_check_allows_only_single_submission_per_transfer() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        precheck = client.post(
+            "/api/v1/transfers/precheck",
+            json={
+                "payee_name": "小d",
+                "amount": 6000,
+                "context": {
+                    "session_id": "session-single-secondary",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "西安",
+                    "lat": 34.3416,
+                    "lng": 108.9398,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": "对方说临时借钱让我马上转。",
+                },
+            },
+        )
+        assert precheck.status_code == 200
+        token = precheck.json()["confirmation_token"]
+
+        first_secondary = client.post(
+            "/api/v1/transfers/secondary-check",
+            json={
+                "confirmation_token": token,
+                "user_reply": "我就是想转账，别问了。",
+                "context": {
+                    "session_id": "session-single-secondary",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "西安",
+                    "lat": 34.3416,
+                    "lng": 108.9398,
+                    "recent_page": "transfer",
+                    "last_action": "secondary_check",
+                    "semantic_summary": "用户提交补充说明。",
+                },
+            },
+        )
+        assert first_secondary.status_code == 200
+        assert first_secondary.json()["secondary_decision"] == "interrogate"
+
+        second_secondary = client.post(
+            "/api/v1/transfers/secondary-check",
+            json={
+                "confirmation_token": token,
+                "user_reply": "再次补充说明。",
+                "context": {
+                    "session_id": "session-single-secondary",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "西安",
+                    "lat": 34.3416,
+                    "lng": 108.9398,
+                    "recent_page": "transfer",
+                    "last_action": "secondary_check",
+                    "semantic_summary": "用户再次提交补充说明。",
+                },
+            },
+        )
+        assert second_secondary.status_code == 400
+        assert "本轮仅允许一次提交" in second_secondary.json()["detail"]
+
+
+def test_confirm_is_rejected_after_single_round_interrogate_result() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        precheck = client.post(
+            "/api/v1/transfers/precheck",
+            json={
+                "payee_name": "小d",
+                "amount": 6000,
+                "context": {
+                    "session_id": "session-interrogate-stop",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "西安",
+                    "lat": 34.3416,
+                    "lng": 108.9398,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": "对方说临时借钱让我马上转。",
+                },
+            },
+        )
+        assert precheck.status_code == 200
+        token = precheck.json()["confirmation_token"]
+
+        secondary = client.post(
+            "/api/v1/transfers/secondary-check",
+            json={
+                "confirmation_token": token,
+                "user_reply": "我就是想转账，别问了。",
+                "context": {
+                    "session_id": "session-interrogate-stop",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "西安",
+                    "lat": 34.3416,
+                    "lng": 108.9398,
+                    "recent_page": "transfer",
+                    "last_action": "secondary_check",
+                    "semantic_summary": "用户提交补充说明。",
+                },
+            },
+        )
+        assert secondary.status_code == 200
+        assert secondary.json()["secondary_decision"] == "interrogate"
+
+        confirm = client.post(
+            "/api/v1/transfers/confirm",
+            json={"confirmation_token": token},
+        )
+        assert confirm.status_code == 400
+        assert "尚未通过二次校验" in confirm.json()["detail"]
+
+
+def test_cancel_pending_transfer_is_explicit_business_action() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        precheck = client.post(
+            "/api/v1/transfers/precheck",
+            json={
+                "payee_name": "小c",
+                "amount": 8000,
+                "context": {
+                    "session_id": "session-cancel-transfer",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "北京",
+                    "lat": 39.9042,
+                    "lng": 116.4074,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": "用户在异地发起大额转账。",
+                    "input_pause_count": 6,
+                    "input_duration_ms": 9000,
+                    "extra_signals": {"app_switch_count": 2},
+                },
+            },
+        )
+        assert precheck.status_code == 200
+        token = precheck.json()["confirmation_token"]
+
+        cancel = client.post(
+            "/api/v1/transfers/cancel",
+            json={"confirmation_token": token},
+        )
+        assert cancel.status_code == 200
+        cancel_body = cancel.json()
+        assert cancel_body["success"] is True
+        assert cancel_body["status"] == "cancelled"
+        assert cancel_body["confirmation_token"] == token
+        assert "已取消" in cancel_body["assistant_message"]
+
+        confirm = client.post(
+            "/api/v1/transfers/confirm",
+            json={"confirmation_token": token},
+        )
+        assert confirm.status_code == 400
+        assert "未找到待确认转账" in confirm.json()["detail"]
+
+
+def test_secondary_check_rejects_cancelled_transfer() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        precheck = client.post(
+            "/api/v1/transfers/precheck",
+            json={
+                "payee_name": "小c",
+                "amount": 8000,
+                "context": {
+                    "session_id": "session-secondary-after-cancel",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "北京",
+                    "lat": 39.9042,
+                    "lng": 116.4074,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": "用户在异地发起大额转账。",
+                },
+            },
+        )
+        assert precheck.status_code == 200
+        token = precheck.json()["confirmation_token"]
+
+        cancel = client.post(
+            "/api/v1/transfers/cancel",
+            json={"confirmation_token": token},
+        )
+        assert cancel.status_code == 200
+
+        secondary = client.post(
+            "/api/v1/transfers/secondary-check",
+            json={
+                "confirmation_token": token,
+                "user_reply": "补充说明",
+                "context": {
+                    "session_id": "session-secondary-after-cancel",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "北京",
+                    "lat": 39.9042,
+                    "lng": 116.4074,
+                    "recent_page": "transfer",
+                    "last_action": "secondary_check",
+                    "semantic_summary": "用户提交补充说明。",
+                },
+            },
+        )
+        assert secondary.status_code == 400
+        assert "非待确认状态" in secondary.json()["detail"]
+
+
+def test_secondary_check_rejects_committed_transfer() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+
+    with TestClient(app) as client:
+        precheck = client.post(
+            "/api/v1/transfers/precheck",
+            json={
+                "payee_name": "小b",
+                "amount": 300,
+                "context": {
+                    "session_id": "session-secondary-after-confirm",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "上海",
+                    "lat": 31.2304,
+                    "lng": 121.4737,
+                    "recent_page": "home",
+                    "last_action": "tap_transfer",
+                    "semantic_summary": "日常生活转账。",
+                },
+            },
+        )
+        assert precheck.status_code == 200
+        precheck_body = precheck.json()
+        assert precheck_body["decision"] == "pass"
+        token = precheck_body["confirmation_token"]
+
+        confirm = client.post(
+            "/api/v1/transfers/confirm",
+            json={"confirmation_token": token},
+        )
+        assert confirm.status_code == 200
+
+        secondary = client.post(
+            "/api/v1/transfers/secondary-check",
+            json={
+                "confirmation_token": token,
+                "user_reply": "补充说明",
+                "context": {
+                    "session_id": "session-secondary-after-confirm",
+                    "device_id": "android-test",
+                    "platform": "android",
+                    "current_city": "上海",
+                    "lat": 31.2304,
+                    "lng": 121.4737,
+                    "recent_page": "transfer",
+                    "last_action": "secondary_check",
+                    "semantic_summary": "用户提交补充说明。",
+                },
+            },
+        )
+        assert secondary.status_code == 400
+        assert "非待确认状态" in secondary.json()["detail"]

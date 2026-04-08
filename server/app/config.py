@@ -34,6 +34,16 @@ def _get_first_non_empty(*names: str, default: str = "") -> str:
     return default
 
 
+def _get_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value.strip())
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str
@@ -42,6 +52,7 @@ class Settings:
     llm_base_url: str
     llm_model: str
     llm_api_name: str
+    llm_timeout_seconds: float
     mcp_bank_enabled: bool
 
 
@@ -77,6 +88,7 @@ def load_settings() -> Settings:
             default="deepseek-v3-2-251201",
         ),
         llm_api_name=_get_first_non_empty("LLM_API_NAME", "ARK_API_NAME"),
+        llm_timeout_seconds=_get_float("LLM_TIMEOUT_SECONDS", 2.0),
         mcp_bank_enabled=_get_bool("MCP_BANK_ENABLED", True),
     )
 

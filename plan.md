@@ -4,115 +4,94 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：`V4 / Phase-1（感知层能力建设）`
-- `V3-beta` 状态：已收口并通过验收，可进入 `V4`。
-- 当前热路径策略保持不变：
-  - `precheck` 继续走知识库 + 规则引擎
-  - Agent 继续只用于 `secondary-check`
-  - `precheck all-Agent` 继续只做 shadow mode
+- 当前阶段：`V5 / Phase-1（启动准备中）`
+- 上一活动版本：`V4（已完成并收口）`
+- 当前版本边界结论：
+  - `V4` 已完成“感知层 + 初版风险报告 Agent”双主线交付。
+  - 原 `V5` 的初版风险报告工作已在 `V4` 内完成。
+  - 新的 `V5` 定义为：治理深化 + 报告增强。
+  - 原 `V3` 性能优化线继续冻结，仅保留观测，不作为当前阻塞项。
+- `V4` 收口结论（2026-04-09）：
+  - 后端风险报告链路已落地，`GET /api/v1/transfers/{confirmation_token}/risk-report` 可用。
+  - `secondary-check` 后已生成并持久化结构化风险报告，同时写入 `trace_events.risk_report_generated`。
+  - Flutter 已补齐最小可用的风险报告查看入口。
+  - 后端回归已通过：`58 passed`。
+  - 前端正式验收已通过：
+    - `flutter analyze --no-version-check` -> `No issues found!`
+    - `flutter test --no-version-check test/widget_test.dart` -> `All tests passed!`
+  - 之前的“Flutter 超时阻塞”已确认为环境问题，根因是：
+    - Flutter SDK Git 信任异常
+    - `flutter analyze` 曾在错误目录执行
 
-## 2. 当前默认决策
+## 2. V4 收口结果
 
-- 不切 LangGraph/LangChain 主编排。
-- 不新增决策枚举，不修改现有 REST 语义。
-- MCP 只提供审计/能力暴露，不作为数据库本体。
-- `V4 / Phase-1` 只做感知层，不扩展治理层规则口径。
-- 结果同步文档最少包含：
-  - `plan.md`
-  - `MVP.md`
-  - `README.md`
+### 2.1 已完成范围
 
-## 3. V4 准入检查表
+#### Track-A 感知层
+1. 冻结 `ClientContext` 契约，V4 范围内只做向后兼容扩展。
+2. 以 `perception_snapshot` 统一沉淀设备、位置、页面行为、输入行为、语义摘要与外部情报摘要。
+3. 在 `precheck`、`secondary-check`、报告生成链路中复用感知结果，不再多处重复拼装。
+4. 在关键 trace payload 中补齐感知摘要和耗时字段。
 
-| 检查项 | 结果 | 证据 |
+#### Track-B 风险报告 Agent
+1. 在 `secondary-check` 之后生成简版结构化风险报告。
+2. 报告输入已覆盖：用户画像摘要、`semantic_summary`、二次回复、`risk_classification`、`secondary_decision`、`semantic_red_flags`、外部情报摘要、explain pack。
+3. 报告输出已固定为：
+   - `headline`
+   - `overall_risk_level`
+   - `risk_summary`
+   - `risk_factors`
+   - `recommended_action`
+   - `evidence`
+   - `generated_at`
+4. 已采用“结构化持久化”方案，按 `confirmation_token` 查询。
+5. 风险报告只做说明和建议，不参与业务裁决。
+
+### 2.2 V4 验收结果
+| 项目 | 结果 | 备注 |
 |---|---|---|
-| V3-beta 全链路验收 | 通过 | 后端 `55 passed`；Flutter `widget_test.dart` 全通过；`flutter analyze` 无问题 |
-| 性能门限 | 通过 | `precheck warm p95=42.34ms`；`secondary warm avg=61.56ms`；LLM path `p95=5905.08ms` |
-| MCP 审计查询稳定 | 通过 | `trace_events` 与 MCP 查询回归通过，拒绝分支 reason 可观测 |
-| 感知层输入字段冻结 | 通过 | 以当前 `ClientContext` 字段为 V4-Phase1 冻结基线，新增字段仅允许向后兼容扩展 |
+| 后端回归 | 通过 | `58 passed` |
+| Flutter analyze | 通过 | `No issues found!` |
+| Flutter widget test | 通过 | `All tests passed!` |
+| 文档一致性 | 通过 | `plan / MVP / README / nowthink / math` 口径已回正 |
 
-**准入结论：** `V4 / Phase-1` 已满足启动条件，按本计划执行。
+### 2.3 V4 完成判定
+- 当前按你的锁定标准执行：自动化通过即可视为 `V4` 达到完成门槛，不额外要求人工联调记录。
+- 因此 `V4` 当前状态为：`已完成 / 已收口`。
 
-## 4. V4 / Phase-1 实施内容（仅感知层）
+## 3. 当前接口边界
 
-### 阶段 A：感知输入契约冻结
-1. 固化 `ClientContext` 感知字段基线（设备、位置、页面行为、语义摘要、微行为信号）。
-2. 明确字段扩展规则：仅新增可选字段，不破坏现有请求体兼容性。
-3. 统一字段命名与类型约束，避免前后端歧义。
-
-### 阶段 B：MCP 感知能力补齐
-1. 梳理感知层 MCP 工具输入输出契约。
-2. 对外部感知能力增加超时、降级和失败分类。
-3. 保证感知层异常不影响主裁决链路可用性。
-
-### 阶段 C：可观测性与数据流一致性
-1. 在审计 payload 中补齐感知字段摘要与关键耗时切片。
-2. 确保感知层输出到识别层的变量流在 `math.md`/`nowthink.md` 中一致。
-3. 保持 Trace 独立链路，不把审计写入耦合进核心裁决。
-
-### 阶段 D：V4-Phase1 验收
-1. 向后兼容回归：现有 `precheck / secondary-check / confirm / cancel` 不回归。
-2. 感知字段契约回归：新增字段缺省时，旧请求路径行为不变。
-3. 性能回归：`precheck warm p95 <= 750ms`，`secondary avg <= 3s` 持续达标。
-
-## 5. 关键接口与数据边界
-
-### 保持不变的 REST 接口
+### 3.1 保持不变
 - `POST /api/v1/transfers/precheck`
 - `POST /api/v1/transfers/secondary-check`
 - `POST /api/v1/transfers/confirm`
 - `POST /api/v1/transfers/cancel`
+- 现有决策枚举与响应语义
 
-### 本阶段允许变化
-- 感知层内部契约与 MCP 工具能力增强
-- 审计字段增强（不破坏现有查询语义）
+### 3.2 已交付新增接口
+- `GET /api/v1/transfers/{confirmation_token}/risk-report`
+- 风险报告 schema / 展示模型
 
-### 本阶段禁止变化
-- 决策枚举和对外响应语义
-- 将 `precheck` 切换为 mandatory Agent
-- 治理层规则口径扩张（留到 `V5`）
+### 3.3 继续禁止
+- 新增业务裁决枚举
+- 让风险报告 Agent 直接参与裁决
+- 将 `precheck` 切换为 mandatory Agent 热路径
 
-## 6. 性能目标与最新实测
+## 4. V5 / Phase-1 当前目标
 
-- 目标：
-  - `precheck warm-path p95 <= 750ms`
-  - `deterministic risk decision subpath <= 300ms`
-  - `secondary-check avg <= 3s`
-  - `LLM path P95 <= 30s`
-- 最新实测（2026-04-08）：
-  - 后端回归：`55 passed`
-  - baseline：
-    - `precheck cold avg/p95 = 39.63ms`
-    - `precheck warm avg = 31.43ms`
-    - `precheck warm p95 = 42.34ms`
-    - `secondary cold avg/p95 = 178.37ms`
-    - `secondary warm avg = 61.56ms`
-    - `secondary warm p95 = 111.77ms`
-  - 真实 LLM benchmark：
-    - `status = ok`
-    - `avg_ms = 5403.69`
-    - `p95_ms = 5905.08`
-  - precheck all-Agent shadow：
-    - `status = ok`
-    - `avg_ms = 2282.41`
-    - `p95_ms = 2530.10`
-    - `decision_drift_rate = 0.0`
-  - Flutter：
-    - `flutter test test/widget_test.dart` 全通过（14/14）
-    - `flutter analyze` 通过（No issues found）
+1. 深化治理层拒绝口径与策略编排一致性。
+2. 增强风险报告质量、模板治理和可复核性。
+3. 评估是否需要报告历史中心、人工复核辅助入口和更细粒度报告追踪字段。
+4. 保持每轮开发后同步 `plan.md / MVP.md / README.md`，涉及架构或变量流时同步 `nowthink.md / math.md`。
 
-## 7. 后续版本触发条件
+## 5. 当前下一步
 
-### V5
-- V4 感知层契约稳定
-- 治理层拒绝口径稳定
-- Trace 字段足够支持人工复核
-
-目标：
-- 完善治理层能力
-- 落地初版风险报告 Agent
+1. 以 `V5 / Phase-1` 为新的唯一活动阶段，整理治理层与报告增强的具体任务拆分。
+2. 在不改变现有业务裁决语义的前提下，定义报告增强范围和治理深化边界。
+3. 保持 `V4` 已交付接口稳定，不为 V5 先行引入破坏性变更。
+4. 大版本完成后继续执行：文档同步 -> `git add -> git commit -> git push`（默认当前工作分支）。
 
 ---
 
-更新日期：2026-04-08  
-当前执行阶段：`V4 / Phase-1`
+更新日期：2026-04-09  
+当前执行阶段：`V5 / Phase-1（启动准备中）`

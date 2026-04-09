@@ -110,13 +110,15 @@ def test_trace_records_secondary_flow() -> None:
         "precheck_decided",
         "secondary_submitted",
         "secondary_decided",
+        "risk_report_generated",
     ]
-    assert items[-1]["decision"] == "interrogate"
-    secondary_payload = items[-1]["payload"]
+    assert items[-2]["decision"] == "interrogate"
+    secondary_payload = items[-2]["payload"]
     assert "timing_total_ms" in secondary_payload
     assert "timing_classification_ms" in secondary_payload
     assert "timing_persistence_ms" in secondary_payload
     assert secondary_payload["timing_total_ms"] >= 0
+    assert items[-1]["payload"]["headline"]
 
 
 def test_repeated_cancel_is_rejected_and_traced() -> None:

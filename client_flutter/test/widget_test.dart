@@ -78,6 +78,30 @@ void main() {
     expect(apiClient.confirmCallCount, 0);
   });
 
+  testWidgets('allows viewing risk report after secondary check', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient();
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.shield_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton).last);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '这是朋友之间的正常还款。');
+    await tester.tap(find.text('提交校验'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('查看风险报告'), findsOneWidget);
+    await tester.tap(find.text('查看风险报告'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('风险报告'), findsOneWidget);
+    expect(find.textContaining('风险因子'), findsOneWidget);
+  });
+
   testWidgets('shows unified invalid input message for empty ai input', (
     WidgetTester tester,
   ) async {
@@ -629,5 +653,19 @@ class _FakeApiClient implements BankingApiClient {
       await Future<void>.delayed(secondaryDelay);
     }
     return secondaryResponse;
+  }
+
+  @override
+  Future<RiskReportData> fetchRiskReport(String confirmationToken) async {
+    return RiskReportData(
+      confirmationToken: confirmationToken,
+      headline: '风险报告 · ${confirmationToken.substring(0, 6)}',
+      overallRiskLevel: 'medium',
+      riskSummary: '结合用户画像、文本与分类，当前转账属于中风险示例。',
+      riskFactors: <String>['语义提示：安全账户', '外部情报：名单命中'],
+      recommendedAction: '建议人工核实收款人身份后再决定是否继续。',
+      evidence: <String>['用户解释中提及验证码/安全账户', '分类得分高于阈值'],
+      generatedAt: '2026-04-09T12:00:00Z',
+    );
   }
 }

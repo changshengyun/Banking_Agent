@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi import HTTPException
 
 from ...schemas.risk import RiskClassificationPayload
+from ...schemas.report import RiskReportPayload
 from ...schemas.transfer import (
     TransferCancelRequest,
     TransferCancelResponse,
@@ -52,3 +54,14 @@ def secondary_check_transfer(
     payload: TransferSecondaryCheckRequest,
 ) -> TransferSecondaryCheckResponse:
     return get_bank_host_service().secondary_check_transfer(payload)
+
+
+@router.get(
+    "/transfers/{confirmation_token}/risk-report",
+    response_model=RiskReportPayload,
+)
+def get_transfer_risk_report(confirmation_token: str) -> RiskReportPayload:
+    try:
+        return get_bank_host_service().get_transfer_risk_report(confirmation_token)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error

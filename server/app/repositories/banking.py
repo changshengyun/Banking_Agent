@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from ..db import get_connection
+from ..schemas.report import RiskReportPayload
 
 
 class BankingRepository:
@@ -511,4 +512,56 @@ class BankingRepository:
                     self._now(),
                 ),
             )
+
+    def upsert_risk_report(
+        self,
+        *,
+        report: RiskReportPayload,
+    ) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO risk_reports
+                (confirmation_token, user_id, headline, overall_risk_level, risk_summary,
+                 risk_factors_json, recommended_action, evidence_json, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(confirmation_token) DO UPDATE SET
+                    headline = excluded.headline,
+                    overall_risk_level = excluded.overall_risk_level,
+                    risk_summary = excluded.risk_summary,
+                    risk_factors_json = excluded.risk_factors_json,
+                    recommended_action = excluded.recommended_action,
+                    evidence_json = excluded.evidence_json,
+                    generated_at = excluded.generated_at
+                """,
+                (
+                    report.confirmation_token,
+                    self.user_id,
+                    report.headline,
+                    report.overall_risk_level,
+                    report.risk_summary,
+                    json.dumps(report.risk_factors, ensure_ascii=False),
+                    report.recommended_action,
+                    json.dumps(report.evidence, ensure_ascii=False),
+                    report.generated_at,
+                ),
+            )
+
+    def get_risk_report(self, confirmation_token: str) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT confirmation_token, headline, overall_risk_level, risk_summary,
+                       risk_factors_json, recommended_action, evidence_json, generated_at
+                FROM risk_reports
+                WHERE confirmation_token = ? AND user_id = ?
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["risk_factors"] = json.loads(payload.pop("risk_factors_json"))
+        payload["evidence"] = json.loads(payload.pop("evidence_json"))
+        return payload
 

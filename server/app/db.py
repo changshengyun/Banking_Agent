@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS risk_reports (
+    confirmation_token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    headline TEXT NOT NULL,
+    overall_risk_level TEXT NOT NULL,
+    risk_summary TEXT NOT NULL,
+    risk_factors_json TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL
+);
 """
 
 

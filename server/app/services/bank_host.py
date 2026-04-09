@@ -8,6 +8,7 @@ from ..repositories.banking import BankingRepository
 from ..schemas.common import SpendingCategory, TransactionItem
 from ..schemas.dashboard import DashboardResponse, TransactionsResponse
 from ..schemas.external_intelligence import ExternalIntelligenceReport
+from ..schemas.report import RiskReportPayload
 from ..schemas.risk import RiskClassificationPayload
 from ..schemas.transfer import (
     TransferCancelRequest,
@@ -24,6 +25,8 @@ from ..schemas.transfer import (
 )
 from .external_intelligence import get_external_intelligence_service
 from .pii_masker import PiiMasker
+from ..utils.executor_utils import get_global_executor
+from .risk_report_service import get_risk_report_service
 from .risk_engine import RiskAssessment, RiskEngine, RiskInput
 from .risk_knowledge_base import get_risk_knowledge_base_service
 
@@ -42,7 +45,9 @@ class BankHostService:
         self.repository = repository or BankingRepository()
         self.risk_engine = RiskEngine()
         self.risk_knowledge = get_risk_knowledge_base_service()
+        self.risk_report_service = get_risk_report_service()
         self.external_intelligence = get_external_intelligence_service()
+        self._executor = get_global_executor()
 
     # HIRD-H: 感知层，负责聚合首页资产、账单和提示信息。
     def get_dashboard(self) -> DashboardResponse:
@@ -94,6 +99,11 @@ class BankHostService:
         total_started_at = time.perf_counter()
         common_cities = self._common_cities()
         payee = self.repository.find_payee(request.payee_name)
+        is_known_payee = payee is not None
+        # 演示环境：小a-小f 是模拟的已知/未知收款人，部分强制设定为已知以测试特定路径
+        if request.payee_name in {"小a", "小b", "小c"}:
+            is_known_payee = True
+
         confirmation_token = self.repository.build_confirmation_token()
         self._write_trace_event(
             confirmation_token=confirmation_token,
@@ -109,19 +119,25 @@ class BankHostService:
                 "recent_page": request.context.recent_page,
                 "last_action": request.context.last_action,
                 "semantic_summary": PiiMasker.mask_text(request.context.semantic_summary),
+                "perception_snapshot": self._build_perception_snapshot(
+                    current_city=request.context.current_city,
+                    recent_page=request.context.recent_page,
+                    last_action=request.context.last_action,
+                    semantic_summary=request.context.semantic_summary,
+                    input_pause_count=request.context.input_pause_count,
+                    input_duration_ms=request.context.input_duration_ms,
+                    extra_signals=request.context.extra_signals,
+                    external_intelligence=None,
+                    is_known_payee=is_known_payee,
+                ),
             },
         )
         external_started_at = time.perf_counter()
-        external_intelligence = self.screen_external_intelligence(request.payee_name)
-        external_intelligence_ms = self._elapsed_ms(external_started_at)
-
-        is_known_payee = payee is not None
-        # 演示环境：小a-小f 是模拟的已知/未知收款人，部分强制设定为已知以测试特定路径
-        if request.payee_name in {"小a", "小b", "小c"}:
-            is_known_payee = True
-
-        classification_started_at = time.perf_counter()
-        risk_classification = self.risk_knowledge.classify_text(
+        # Parallelize external intelligence screening and risk classification
+        future_external = self._executor.submit(self._call_with_timing, self.screen_external_intelligence, request.payee_name)
+        future_classification = self._executor.submit(
+            self._call_with_timing,
+            self.risk_knowledge.classify_text,
             text=self._build_classification_text(
                 payee_name=request.payee_name,
                 semantic_summary=request.context.semantic_summary,
@@ -133,7 +149,10 @@ class BankHostService:
             common_cities=common_cities,
             is_known_payee=is_known_payee,
         )
-        classification_ms = self._elapsed_ms(classification_started_at)
+
+        external_intelligence, external_intelligence_ms = future_external.result()
+        risk_classification, classification_ms = future_classification.result()
+
         c_match = self._derive_c_match(risk_classification)
         engine_started_at = time.perf_counter()
         assessment = self.risk_engine.assess(
@@ -218,6 +237,17 @@ class BankHostService:
                     hit.summary for hit in external_intelligence.hits
                 ],
                 "reasons": assessment.reasons,
+                "perception_snapshot": self._build_perception_snapshot(
+                    current_city=request.context.current_city,
+                    recent_page=request.context.recent_page,
+                    last_action=request.context.last_action,
+                    semantic_summary=request.context.semantic_summary,
+                    input_pause_count=request.context.input_pause_count,
+                    input_duration_ms=request.context.input_duration_ms,
+                    extra_signals=request.context.extra_signals,
+                    external_intelligence=external_intelligence,
+                    is_known_payee=is_known_payee,
+                ),
                 "timing_total_ms": timing_total_ms,
                 "timing_external_intelligence_ms": external_intelligence_ms,
                 "timing_classification_ms": classification_ms,
@@ -435,6 +465,15 @@ class BankHostService:
             payload={
                 "user_reply": PiiMasker.mask_text(request.user_reply),
                 "semantic_summary": PiiMasker.mask_text(pending["semantic_summary"]),
+                "perception_snapshot": self._build_perception_snapshot(
+                    current_city=pending["city"],
+                    recent_page=pending["recent_page"],
+                    last_action="secondary_check",
+                    semantic_summary=pending["semantic_summary"],
+                    extra_signals={"reply_length": len(request.user_reply)},
+                    external_intelligence=None,
+                    is_known_payee=self.repository.find_payee(pending["payee_name"]) is not None,
+                ),
             },
         )
 
@@ -443,23 +482,24 @@ class BankHostService:
         if pending["decision"] == "pass":
             common_cities = self._common_cities()
             is_known_payee = self.repository.find_payee(pending["payee_name"]) is not None
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                external_future = executor.submit(
-                    self._call_with_timing,
-                    self.screen_external_intelligence,
-                    pending["payee_name"],
-                )
-                classification_future = executor.submit(
-                    self._call_with_timing,
-                    self.risk_knowledge.classify_text,
-                    text=pending["semantic_summary"],
-                    amount=float(pending["amount"]),
-                    current_city=pending["city"],
-                    common_cities=common_cities,
-                    is_known_payee=is_known_payee,
-                )
-                external_intelligence, external_intelligence_ms = external_future.result()
-                risk_classification, classification_ms = classification_future.result()
+
+            external_future = self._executor.submit(
+                self._call_with_timing,
+                self.screen_external_intelligence,
+                pending["payee_name"],
+            )
+            classification_future = self._executor.submit(
+                self._call_with_timing,
+                self.risk_knowledge.classify_text,
+                text=pending["semantic_summary"],
+                amount=float(pending["amount"]),
+                current_city=pending["city"],
+                common_cities=common_cities,
+                is_known_payee=is_known_payee,
+            )
+            external_intelligence, external_intelligence_ms = external_future.result()
+            risk_classification, classification_ms = classification_future.result()
+
             explain_pack = self._build_secondary_explain_pack(
                 flag_s=float(pending["flag_s"]),
                 g_behavior=float(pending["g_behavior"]),
@@ -528,32 +568,33 @@ class BankHostService:
         secondary_question = self._select_secondary_question(
             anchor_classification.follow_up_questions
         )
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            classification_future = executor.submit(
-                self._call_with_timing,
-                self.risk_knowledge.classify_text,
-                text=f"{pending['semantic_summary']} {request.user_reply}".strip(),
-                amount=float(pending["amount"]),
-                current_city=pending["city"],
-                common_cities=common_cities,
-                is_known_payee=is_known_payee,
-            )
-            external_future = executor.submit(
-                self._call_with_timing,
-                self.screen_external_intelligence,
-                pending["payee_name"],
-            )
-            result = get_agent_service().evaluate_secondary_intercept(
-                user_reply=request.user_reply,
-                semantic_summary=pending["semantic_summary"],
-                risk_category=anchor_classification.risk_category,
-                risk_level=anchor_classification.risk_level,
-                matched_keywords=anchor_classification.matched_keywords,
-                matched_scenarios=anchor_classification.matched_scenarios,
-                follow_up_questions=anchor_classification.follow_up_questions,
-            )
-            risk_classification, additional_classification_ms = classification_future.result()
-            external_intelligence, external_intelligence_ms = external_future.result()
+
+        classification_future = self._executor.submit(
+            self._call_with_timing,
+            self.risk_knowledge.classify_text,
+            text=f"{pending['semantic_summary']} {request.user_reply}".strip(),
+            amount=float(pending["amount"]),
+            current_city=pending["city"],
+            common_cities=common_cities,
+            is_known_payee=is_known_payee,
+        )
+        external_future = self._executor.submit(
+            self._call_with_timing,
+            self.screen_external_intelligence,
+            pending["payee_name"],
+        )
+        result = get_agent_service().evaluate_secondary_intercept(
+            user_reply=request.user_reply,
+            semantic_summary=pending["semantic_summary"],
+            risk_category=anchor_classification.risk_category,
+            risk_level=anchor_classification.risk_level,
+            matched_keywords=anchor_classification.matched_keywords,
+            matched_scenarios=anchor_classification.matched_scenarios,
+            follow_up_questions=anchor_classification.follow_up_questions,
+        )
+        risk_classification, additional_classification_ms = classification_future.result()
+        external_intelligence, external_intelligence_ms = external_future.result()
+
         classification_ms = round(
             anchor_classification_ms + additional_classification_ms,
             2,
@@ -598,6 +639,20 @@ class BankHostService:
             risk_level=risk_classification.risk_level,
             external_intelligence=external_intelligence,
         )
+        risk_report = self._generate_and_store_risk_report(
+            confirmation_token=request.confirmation_token,
+            pending_transfer={
+                **pending,
+                "secondary_reply": request.user_reply,
+                "secondary_decision": result.decision,
+                "secondary_risk": result.risk,
+            },
+            risk_classification=risk_classification,
+            secondary_decision=result.decision,
+            semantic_red_flags=result.semantic_red_flags,
+            external_intelligence=external_intelligence,
+            explain_pack=explain_pack,
+        )
         self._write_trace_event(
             confirmation_token=request.confirmation_token,
             event_type="secondary_decided",
@@ -610,6 +665,17 @@ class BankHostService:
                 "risk_category": risk_classification.risk_category,
                 "risk_level": risk_classification.risk_level,
                 "policy_version": policy_version,
+                "perception_snapshot": self._build_perception_snapshot(
+                    current_city=pending["city"],
+                    recent_page=pending["recent_page"],
+                    last_action="secondary_check",
+                    semantic_summary=pending["semantic_summary"],
+                    extra_signals={"reply_length": len(request.user_reply)},
+                    external_intelligence=external_intelligence,
+                    is_known_payee=is_known_payee,
+                ),
+                "risk_report_headline": risk_report.headline,
+                "risk_report_level": risk_report.overall_risk_level,
                 "timing_total_ms": self._elapsed_ms(total_started_at),
                 "timing_classification_ms": classification_ms,
                 "timing_external_intelligence_ms": external_intelligence_ms,
@@ -620,6 +686,12 @@ class BankHostService:
                     else {}
                 ),
             },
+        )
+        self._write_risk_report_generated_event(
+            confirmation_token=request.confirmation_token,
+            secondary_decision=result.decision,
+            final_risk=result.risk,
+            report=risk_report,
         )
         return TransferSecondaryCheckResponse(
             secondary_decision=result.decision,
@@ -647,6 +719,12 @@ class BankHostService:
             common_cities=self._common_cities(),
             is_known_payee=payee is not None,
         )
+
+    def get_transfer_risk_report(self, confirmation_token: str) -> RiskReportPayload:
+        payload = self.repository.get_risk_report(confirmation_token)
+        if payload is None:
+            raise ValueError("未找到对应的风险报告。")
+        return RiskReportPayload(**payload)
 
     # HIRD-H: 感知层，负责筛查收款人的外部情报名单命中。
     def screen_external_intelligence(
@@ -684,6 +762,83 @@ class BankHostService:
             for item in summary
         ]
         return "近期消费主要集中在：" + "；".join(parts) + "。"
+
+    def _generate_and_store_risk_report(
+        self,
+        *,
+        confirmation_token: str,
+        pending_transfer: dict,
+        risk_classification: RiskClassificationPayload,
+        secondary_decision: str,
+        semantic_red_flags: list[str],
+        external_intelligence: ExternalIntelligenceReport,
+        explain_pack: ExplainPack,
+    ) -> RiskReportPayload:
+        generated_at = self.repository._now()
+        report = self.risk_report_service.generate_report(
+            confirmation_token=confirmation_token,
+            user_profile=self.repository.get_user_profile(),
+            pending_transfer=pending_transfer,
+            risk_classification=risk_classification,
+            secondary_decision=secondary_decision,
+            semantic_red_flags=semantic_red_flags,
+            external_intelligence=external_intelligence,
+            explain_pack=explain_pack,
+            generated_at=generated_at,
+        )
+        self.repository.upsert_risk_report(report=report)
+        return report
+
+    def _write_risk_report_generated_event(
+        self,
+        *,
+        confirmation_token: str,
+        secondary_decision: str,
+        final_risk: float,
+        report: RiskReportPayload,
+    ) -> None:
+        self._write_trace_event(
+            confirmation_token=confirmation_token,
+            event_type="risk_report_generated",
+            stage="risk-report",
+            decision=secondary_decision,
+            risk_level=report.overall_risk_level,
+            final_risk=final_risk,
+            payload={
+                "headline": report.headline,
+                "overall_risk_level": report.overall_risk_level,
+                "risk_factors": report.risk_factors,
+                "generated_at": report.generated_at,
+            },
+        )
+
+    def _build_perception_snapshot(
+        self,
+        *,
+        current_city: str,
+        recent_page: str,
+        last_action: str,
+        semantic_summary: str,
+        input_pause_count: int | None = None,
+        input_duration_ms: int | None = None,
+        extra_signals: dict | None = None,
+        external_intelligence: ExternalIntelligenceReport | None = None,
+        is_known_payee: bool = False,
+    ) -> dict[str, object]:
+        snapshot = {
+            "current_city": current_city,
+            "recent_page": recent_page,
+            "last_action": last_action,
+            "semantic_summary": PiiMasker.mask_text(semantic_summary),
+            "input_pause_count": input_pause_count,
+            "input_duration_ms": input_duration_ms,
+            "is_known_payee": is_known_payee,
+            "extra_signals": extra_signals or {},
+        }
+        if external_intelligence is not None:
+            snapshot["external_intelligence_status"] = external_intelligence.status
+            snapshot["external_intelligence_level"] = external_intelligence.max_risk_level
+        return snapshot
 
     # HIRD-D: 治理层，负责把预检决策翻译成用户可读的提示文案。
     def _build_transfer_message(

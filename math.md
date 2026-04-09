@@ -8,6 +8,7 @@
 | 变量 | 含义 | 当前来源 |
 |---|---|---|
 | `semantic_summary` | 用户语义摘要 | `ClientContext.semantic_summary` |
+| `perception_snapshot` | 统一感知摘要 | `BankHostService._build_perception_snapshot()` |
 | `c_match` | 场景匹配置信度 | `RiskKnowledgeBase -> BankHost._derive_c_match()` |
 | `flag_s` | 静态风险分 | `RiskEngine._calculate_static_score()` |
 | `g_behavior` | 行为风险分 | `RiskEngine._calculate_behavior_pulse_score()` |
@@ -16,6 +17,7 @@
 | `w_base` | 基础权重 | `RiskEngine.W_BASE = 0.3` |
 | `w_adj` | 动态调整后的权重 | 主公式中间量 |
 | `f_final` | 最终综合风险分 | `RiskEngine.apply_dynamic_formula()` |
+| `risk_report` | 二次质询后的结构化说明 | `RiskReportService.generate_report()` |
 
 ## 2. 当前主公式
 
@@ -38,9 +40,9 @@ f_final = (1 - w_adj) * s_static + w_adj * s_dev
 
 ### 2.4 路由阈值
 ```text
-f_final < 0.3      -> pass
+f_final < 0.3         -> pass
 0.3 <= f_final <= 0.8 -> interrogate
-f_final > 0.8      -> block
+f_final > 0.8         -> block
 ```
 
 ### 2.5 硬拦截优先级
@@ -48,6 +50,11 @@ f_final > 0.8      -> block
 ```text
 hard_block = True -> final_risk = 1.0 -> block
 ```
+
+### 2.6 风险报告与公式边界
+- `risk_report` 是 `secondary-check` 之后的说明性产物。
+- 它不参与 `f_final` 计算，不改变 `decision / secondary_decision`。
+- 风险报告引用的是已有裁决依据，而不是产生新的裁决依据。
 
 ## 3. 数据在各层之间如何流动
 
@@ -57,11 +64,14 @@ hard_block = True -> final_risk = 1.0 -> block
 3. `amount`
 4. `recent_page`
 5. `last_action`
-6. `extra_signals`
+6. `input_pause_count`
+7. `input_duration_ms`
+8. `extra_signals`
 
 这些字段进入：
 - `RiskKnowledgeBase.classify_text()`
 - `RiskEngine.assess()`
+- `BankHostService._build_perception_snapshot()`
 
 ### 3.2 认知层 -> 治理层
 `RiskKnowledgeBase.classify_text()` 产出：
@@ -107,7 +117,33 @@ hard_block = True -> final_risk = 1.0 -> block
 - `secondary_risk`
 - `trace_events.secondary_decided`
 
-### 3.5 执行层与审计层
+### 3.5 二次质询后的报告流
+`RiskReportService.generate_report()` 输入：
+- 用户画像摘要
+- `semantic_summary`
+- 用户二次回复
+- `risk_classification`
+- `secondary_decision`
+- `semantic_red_flags`
+- 外部情报摘要
+- `explain_pack`
+
+输出：
+- `headline`
+- `overall_risk_level`
+- `risk_summary`
+- `risk_factors`
+- `recommended_action`
+- `evidence`
+- `generated_at`
+
+这些输出流向：
+- `risk_reports`
+- `trace_events.risk_report_generated`
+- `GET /api/v1/transfers/{confirmation_token}/risk-report`
+- Flutter 风险报告面板
+
+### 3.6 执行层与审计层
 - `confirm -> trace_events.transfer_confirmed`
 - `cancel -> trace_events.transfer_cancelled`
 - 非法重复操作 -> `trace_events.transfer_rejected`
@@ -117,12 +153,19 @@ hard_block = True -> final_risk = 1.0 -> block
   - `timing_classification_ms`
   - `timing_engine_ms`
   - `timing_persistence_ms`
+  - `perception_snapshot`
 - `secondary_decided.payload` 最小性能字段：
   - `timing_total_ms`
   - `timing_classification_ms`
   - `timing_external_intelligence_ms`
   - `timing_persistence_ms`
   - `timing_llm_ms`（仅真实走 LLM 时写入）
+  - `perception_snapshot`
+- `risk_report_generated.payload` 最小字段：
+  - `headline`
+  - `overall_risk_level`
+  - `risk_factors`
+  - `generated_at`
 
 ## 4. 当前场景算例
 
@@ -164,6 +207,7 @@ hard_block = True -> final_risk = 1.0 -> block
   - 命中 `semantic_red_flags`
   - `secondary_decision = block_secondary`
   - 写入 `trace_events.secondary_decided`
+  - 生成高风险结构化报告并写入 `trace_events.risk_report_generated`
 
 ## 5. 当前代码实现位置
 
@@ -175,7 +219,10 @@ hard_block = True -> final_risk = 1.0 -> block
   - `server/app/services/risk_knowledge_base.py`
 - 二次质询语义结果：
   - `server/app/services/agent_service.py`
-- 审计事件：
+- 风险报告生成：
+  - `server/app/services/risk_report_service.py`
+  - `server/app/schemas/report.py`
+- 审计事件与持久化：
   - `server/app/repositories/banking.py`
   - `server/app/services/bank_host.py`
 
@@ -204,21 +251,13 @@ hard_block = True -> final_risk = 1.0 -> block
 - FraudNet: `https://www.fraud.net/solutions/transaction-monitoring`
 - NN/g: `https://www.nngroup.com/articles/response-times-3-important-limits/`
 
-### 6.4 当前项目的工程结论
-- 当前 `precheck` 实测：
-  - `cold_start avg/p95 40.35ms`
-  - `warm_path avg 32.41ms`
-  - `warm_path p95 58.19ms`
-- 当前 `secondary-check` 实测：
-  - `cold_start avg/p95 118.03ms`
-  - `warm_path avg 46.66ms`
-  - `warm_path p95 91.62ms`
-- 当前结论：
-  - `precheck warm_path p95` 已在目标内
-  - `secondary-check avg` 已在目标内
-- 当前 LLM benchmark 状态：
-  - isolated LLM path benchmark：`avg 4536.54ms / p95 5784.39ms`
-  - precheck all-Agent shadow benchmark：`avg 1837.33ms / p95 2094.15ms / drift 0.0`
+### 6.4 当前项目工程结论（2026-04-09）
+- 后端回归：`58 passed`
+- Flutter analyze：`No issues found!`
+- Flutter widget test：`All tests passed!`
+- 性能口径：
+  - 继续保留既有 benchmark 和 warm/cold 基线
+  - 当前 `V4` 完成判定不以性能专项优化作为阻塞项
 - 在采样结果证明之前，不允许把 `precheck` 切为 mandatory Agent 热路径。
 
 ## 7. 全走 Agent 的判定结论
@@ -232,10 +271,11 @@ hard_block = True -> final_risk = 1.0 -> block
   - 增加不可用时的主链路失败概率
 - 所以当前只允许：
   - `secondary-check` 使用 Agent
-  - `precheck` 维持知识库+规则引擎
+  - `risk_report` 在 `secondary-check` 后生成说明
+  - `precheck` 维持知识库 + 规则引擎
   - `precheck all-Agent` 只做 shadow benchmark
 
 ---
 
-更新日期：2026-04-08  
+更新日期：2026-04-09  
 定位：`公式与数据流文档`

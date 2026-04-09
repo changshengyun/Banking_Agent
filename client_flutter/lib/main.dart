@@ -78,6 +78,10 @@ class _BankHomePageState extends State<BankHomePage> {
   String _transferBusyAction = '';
   Timer? _transferBusyDelayTimer;
   Timer? _transferBusyLongWaitTimer;
+  RiskReportData? _latestRiskReport;
+  String? _latestReportToken;
+  bool _riskReportLoading = false;
+  String? _riskReportError;
 
   @override
   void initState() {
@@ -209,6 +213,60 @@ class _BankHomePageState extends State<BankHomePage> {
     } finally {
       _stopTransferBusyFeedback();
     }
+  }
+
+  Future<void> _loadRiskReport(String confirmationToken) async {
+    setState(() {
+      _riskReportLoading = true;
+      _riskReportError = null;
+    });
+    try {
+      final RiskReportData report =
+          await widget.apiClient.fetchRiskReport(confirmationToken);
+      if (!mounted) return;
+      setState(() {
+        _latestRiskReport = report;
+        _latestReportToken = confirmationToken;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _riskReportError = error.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _riskReportError = '风险报告获取失败');
+    } finally {
+      if (mounted) {
+        setState(() => _riskReportLoading = false);
+      }
+    }
+  }
+
+  bool _hasRiskReport(String confirmationToken) {
+    return !_riskReportLoading &&
+        _latestRiskReport != null &&
+        _latestReportToken == confirmationToken;
+  }
+
+  Future<void> _openRiskReportSheet(String confirmationToken) async {
+    if (!_hasRiskReport(confirmationToken)) {
+      _showSnack(
+        _riskReportLoading
+            ? '风险报告加载中，请稍候'
+            : _riskReportError ?? '尚未生成风险报告',
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (BuildContext context) => _RiskReportSheet(
+        report: _latestRiskReport!,
+      ),
+    );
   }
 
   Future<void> _cancelPendingTransfer(String confirmationToken) async {
@@ -523,18 +581,34 @@ class _BankHomePageState extends State<BankHomePage> {
             ),
           ),
         );
+        // Start loading report in background, don't await here to avoid UI lag
+        unawaited(_loadRiskReport(result.confirmationToken));
+
         if (!mounted) return;
         _showSnack(secondary.assistantMessage);
         if (secondary.secondaryDecision == 'block_secondary') {
-          await _showSecondaryBlockedDialog(secondary);
+          await _showSecondaryBlockedDialog(
+            secondary,
+            confirmationToken: result.confirmationToken,
+          );
           return;
         }
         if (secondary.secondaryDecision == 'interrogate') {
-          await _showSecondaryInterrogateDialog(secondary);
+          await _showSecondaryInterrogateDialog(
+            secondary,
+            confirmationToken: result.confirmationToken,
+          );
           return;
         }
         if (secondary.secondaryDecision != 'pass_secondary') {
           _showSnack('当前转账未通过二次校验，无法继续确认');
+          return;
+        }
+        final bool shouldConfirm = await _showSecondaryPassedDialog(
+          secondary,
+          confirmationToken: result.confirmationToken,
+        );
+        if (!shouldConfirm) {
           return;
         }
       } on ApiException catch (error) {
@@ -699,8 +773,9 @@ class _BankHomePageState extends State<BankHomePage> {
   }
 
   Future<void> _showSecondaryBlockedDialog(
-    TransferSecondaryCheckResult result,
-  ) async {
+    TransferSecondaryCheckResult result, {
+    required String confirmationToken,
+  }) async {
     await showDialog<void>(
       barrierDismissible: false,
       context: context,
@@ -718,6 +793,14 @@ class _BankHomePageState extends State<BankHomePage> {
           ],
         ),
         actions: <Widget>[
+          if (_hasRiskReport(confirmationToken))
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                unawaited(_openRiskReportSheet(confirmationToken));
+              },
+              child: const Text('查看风险报告'),
+            ),
           FilledButton.tonal(
             onPressed: () => Navigator.pop(context),
             child: const Text('知道了'),
@@ -728,8 +811,9 @@ class _BankHomePageState extends State<BankHomePage> {
   }
 
   Future<void> _showSecondaryInterrogateDialog(
-    TransferSecondaryCheckResult result,
-  ) async {
+    TransferSecondaryCheckResult result, {
+    required String confirmationToken,
+  }) async {
     await showDialog<void>(
       barrierDismissible: false,
       context: context,
@@ -747,6 +831,14 @@ class _BankHomePageState extends State<BankHomePage> {
           ],
         ),
         actions: <Widget>[
+          if (_hasRiskReport(confirmationToken))
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                unawaited(_openRiskReportSheet(confirmationToken));
+              },
+              child: const Text('查看风险报告'),
+            ),
           FilledButton.tonal(
             onPressed: () => Navigator.pop(context),
             child: const Text('知道了'),
@@ -754,6 +846,49 @@ class _BankHomePageState extends State<BankHomePage> {
         ],
       ),
     );
+  }
+
+  Future<bool> _showSecondaryPassedDialog(
+    TransferSecondaryCheckResult result, {
+    required String confirmationToken,
+  }) async {
+    final bool? confirmed = await showDialog<bool>(
+      barrierDismissible: false,
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('二次校验通过'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(result.assistantMessage),
+              const SizedBox(height: 12),
+              _XaiExplainPanel(explainPack: result.explainPack),
+              const SizedBox(height: 12),
+              ...result.reasons.map((String reason) => Text('• $reason')),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () async {
+              await _openRiskReportSheet(confirmationToken);
+            },
+            child: const Text('查看风险报告'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('稍后再说'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('继续确认转账'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   void _openAiSheet() {
@@ -1215,12 +1350,8 @@ class _SheetHandle extends StatelessWidget {
   }
 }
 
-class _XaiExplainPanel extends StatelessWidget {
-  const _XaiExplainPanel({required this.explainPack});
-
-  final ExplainPackData explainPack;
-
-  Color _riskColor(String level) {
+class _ThemeUtils {
+  static Color riskColor(String level) {
     switch (level.toLowerCase()) {
       case 'high':
         return const Color(0xFFB3261E);
@@ -1231,7 +1362,7 @@ class _XaiExplainPanel extends StatelessWidget {
     }
   }
 
-  String _riskLabel(String level) {
+  static String riskLabel(String level) {
     switch (level.toLowerCase()) {
       case 'high':
         return '高风险';
@@ -1241,6 +1372,12 @@ class _XaiExplainPanel extends StatelessWidget {
         return '中风险';
     }
   }
+}
+
+class _XaiExplainPanel extends StatelessWidget {
+  const _XaiExplainPanel({required this.explainPack});
+
+  final ExplainPackData explainPack;
 
   String _score(double value) => (value * 100).toStringAsFixed(0);
 
@@ -1305,7 +1442,7 @@ class _XaiExplainPanel extends StatelessWidget {
                       width: 8,
                       height: 8,
                       decoration: BoxDecoration(
-                        color: _riskColor(node.level),
+                        color: _ThemeUtils.riskColor(node.level),
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -1315,7 +1452,7 @@ class _XaiExplainPanel extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
                           Text(
-                            '${node.title} · ${_riskLabel(node.level)} · ${(node.score * 100).toStringAsFixed(0)}',
+                            '${node.title} · ${_ThemeUtils.riskLabel(node.level)} · ${(node.score * 100).toStringAsFixed(0)}',
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
                           if (node.summary.isNotEmpty)
@@ -1337,7 +1474,106 @@ class _XaiExplainPanel extends StatelessWidget {
       ),
     );
   }
+}
 
+class _RiskReportSheet extends StatelessWidget {
+  const _RiskReportSheet({required this.report});
+
+  final RiskReportData report;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: MediaQuery.of(context).size.height * 0.72,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(
+                  child: Text(
+                    '风险报告',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              report.headline,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Chip(
+              avatar: Icon(
+                Icons.shield_rounded,
+                size: 18,
+                color: _ThemeUtils.riskColor(report.overallRiskLevel),
+              ),
+              label: Text('风险等级 · ${_ThemeUtils.riskLabel(report.overallRiskLevel)}'),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: ListView(
+                children: <Widget>[
+                  Text(
+                    report.riskSummary,
+                    style: const TextStyle(color: Colors.black87),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '风险因子',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: report.riskFactors
+                        .map((String factor) => Chip(label: Text(factor)))
+                        .toList(),
+                  ),
+                  const Divider(height: 32),
+                  Text(
+                    '建议动作',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(report.recommendedAction),
+                  const Divider(height: 32),
+                  Text(
+                    '证据',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  ...report.evidence.map(
+                    (String item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Text('• $item'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Text(
+              '生成时间：${report.generatedAt}',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _UiChatMessage {

@@ -35,6 +35,7 @@ abstract class BankingApiClient {
     required List<ChatTurn> messages,
     required ClientContextData context,
   });
+  Future<RiskReportData> fetchRiskReport(String confirmationToken);
 }
 
 class HttpBankingApiClient implements BankingApiClient {
@@ -135,6 +136,15 @@ class HttpBankingApiClient implements BankingApiClient {
       }),
     );
     return ChatReply.fromJson(_decode(response));
+  }
+
+  @override
+  Future<RiskReportData> fetchRiskReport(String confirmationToken) async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/api/v1/transfers/$confirmationToken/risk-report'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+    );
+    return RiskReportData.fromJson(_decode(response));
   }
 
   Map<String, dynamic> _decode(http.Response response) {
@@ -757,6 +767,45 @@ class ExplainNodeData {
   final String summary;
   final String detail;
   final double score;
+}
+
+class RiskReportData {
+  const RiskReportData({
+    required this.confirmationToken,
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.riskSummary,
+    required this.riskFactors,
+    required this.recommendedAction,
+    required this.evidence,
+    required this.generatedAt,
+  });
+
+  factory RiskReportData.fromJson(Map<String, dynamic> json) {
+    return RiskReportData(
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? 'medium',
+      riskSummary: json['risk_summary'] as String? ?? '',
+      riskFactors: (json['risk_factors'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+      recommendedAction: json['recommended_action'] as String? ?? '',
+      evidence: (json['evidence'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+      generatedAt: json['generated_at'] as String? ?? '',
+    );
+  }
+
+  final String confirmationToken;
+  final String headline;
+  final String overallRiskLevel;
+  final String riskSummary;
+  final List<String> riskFactors;
+  final String recommendedAction;
+  final List<String> evidence;
+  final String generatedAt;
 }
 
 class ChatTurn {

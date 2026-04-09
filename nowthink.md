@@ -10,10 +10,12 @@
 - 认知层用多 Agent 判断“用户为什么这样做”
 - 治理层把不确定的 AI 建议压缩成可验证的确定性决策
 - 执行层把决策变成明确业务动作和审计事件
+- 报告层在裁决之后生成可读、可复核、可持久化的风险说明
 
 核心设计原则：
 - Agent 只负责分析，不负责执行业务动作
 - 治理层保留最终裁决权
+- 风险报告 Agent 只做说明，不改变裁决
 - 审计链路独立，不能被 LLM 调用成败绑架
 - 所有业务状态变更都必须可追溯
 
@@ -26,11 +28,15 @@
   - 金额
   - 城市
   - 页面与行为信号
+  - 输入微行为
   - 外部情报
 - 当前代码映射：
   - `server/app/schemas/common.py`
   - `server/app/services/external_intelligence.py`
   - `server/app/repositories/banking.py`
+  - `server/app/services/bank_host.py::_build_perception_snapshot`
+- 当前职责：
+  - 将设备、位置、页面行为、输入行为、语义摘要、外部情报压缩为统一的 `perception_snapshot`
 
 ### HIRD-C/R 认知决策层
 - 角色：
@@ -52,29 +58,32 @@
   - `server/app/services/risk_engine.py`
   - `server/app/services/pii_masker.py`
   - `server/app/services/bank_host.py`
+  - `server/app/services/risk_report_service.py`
 - 核心职责：
   - 公式计算
   - 阈值路由
   - 状态机控制
   - 拒绝分支口径统一
+  - 风险报告触发与持久化
   - Trace 审计沉淀
 
 ### HIRD-E 业务执行层
 - 当前代码映射：
   - `server/app/api/routes/transfers.py`
-  - `server/app/services/bank_host.py`
+  - `client_flutter/lib/banking_api.dart`
   - `client_flutter/lib/main.dart`
 - 当前动作：
   - `confirm`
   - `cancel`
   - `secondary-check`
+  - `risk-report view`
   - explain pack 展示
 
 ## 3. 数据如何流动
 
 ### 3.1 预检路径
 1. 前端提交 `TransferPrecheckRequest`
-2. `BankHostService.precheck_transfer()` 聚合上下文与外部情报
+2. `BankHostService.precheck_transfer()` 聚合上下文、外部情报与感知快照
 3. `RiskKnowledgeBase.classify_text()` 产出：
    - `risk_category`
    - `risk_level`
@@ -99,7 +108,7 @@
 
 ### 3.2 二次质询路径
 1. 前端提交 `TransferSecondaryCheckRequest`
-2. `BankHostService.secondary_check_transfer()` 先校验 token 状态
+2. `BankHostService.secondary_check_transfer()` 校验 token 状态
 3. `AgentService.evaluate_secondary_intercept()` 按顺序执行：
    - 红旗规则直拦
    - 本地低风险放行
@@ -108,14 +117,30 @@
 4. 治理层回写：
    - `pending_transfers.secondary_*`
    - `risk_events`
-   - `trace_events`
-5. 前端收到：
+   - `trace_events.secondary_decided`
+5. 在 `secondary-check` 结果确定后，`RiskReportService` 基于用户画像、文本、风险分类、语义红旗、外部情报和 explain pack 生成结构化报告
+6. 报告写入：
+   - `risk_reports`
+   - `trace_events.risk_report_generated`
+7. 前端收到：
    - `secondary_decision`
    - `semantic_red_flags`
    - `final_risk_after_secondary`
    - `explain_pack`
 
-### 3.3 确认与取消路径
+### 3.3 风险报告查看路径
+1. Flutter 在二次校验完成后调用 `GET /api/v1/transfers/{confirmation_token}/risk-report`
+2. 后端从 `risk_reports` 读取结构化报告
+3. 前端用底部面板展示：
+   - `headline`
+   - `overall_risk_level`
+   - `risk_summary`
+   - `risk_factors`
+   - `recommended_action`
+   - `evidence`
+   - `generated_at`
+
+### 3.4 确认与取消路径
 - `confirm`
   - 只允许 `pending`
   - `interrogate` 路径必须先得到 `pass_secondary`
@@ -132,7 +157,7 @@
 ### 核心服务
 - `server/app/services/bank_host.py`
   - 业务编排入口
-  - 装配知识库、风险引擎、外部情报、仓储
+  - 装配知识库、风险引擎、外部情报、仓储、报告服务
 - `server/app/services/risk_engine.py`
   - 主公式
   - 阈值路由
@@ -146,15 +171,29 @@
   - 红旗阻断
   - 本地低风险放行
   - LLM 兜底
+- `server/app/services/risk_report_service.py`
+  - 结构化风险报告生成
+  - LLM JSON 优先
+  - fallback 兜底
 
 ### 持久化与审计
 - `server/app/repositories/banking.py`
   - `pending_transfers`
   - `risk_events`
   - `trace_events`
+  - `risk_reports`
+- `server/app/schemas/report.py`
+  - 风险报告结构化 schema
 - `mcp_servers/bank_server.py`
-  - 当前已暴露银行演示工具
-  - V3-beta 继续承接审计查询工具
+  - 当前继续承接审计查询工具
+  - 风险报告暂未作为 MCP 独立工具暴露
+
+### 前端映射
+- `client_flutter/lib/banking_api.dart`
+  - 新增 `fetchRiskReport()`
+- `client_flutter/lib/main.dart`
+  - 二次校验后加载报告
+  - `_RiskReportSheet` 展示结构化摘要
 
 ## 5. 为什么当前不把 precheck 全走 Agent
 
@@ -167,6 +206,7 @@
 所以当前策略固定为：
 - `precheck`：知识库 + 规则引擎
 - `secondary-check`：规则优先 + Agent 兜底
+- `risk report`：`secondary-check` 后的说明性产物
 - `precheck all-Agent`：只允许 shadow mode 评估，不进入主路径
 
 ## 6. 最终目标性能指标
@@ -187,17 +227,20 @@
 - `LLM path P95 <= 30s`
   - 来自 NN/g 对“注意力保持”的 `10 seconds` 上限，放宽 3 倍
 
-### UX 配套要求
-- `>1s` 显示 loading/busy 状态
-- `>10s` 显示明确等待反馈，并允许用户中断或取消
+### V4 收口验证状态
+- `V4` 自动化验收已通过：
+  - 后端：`58 passed`
+  - Flutter analyze：`No issues found!`
+  - Flutter widget test：`All tests passed!`
+- 之前的 Flutter 超时并非代码根因，而是环境问题，当前已排除。
+- 性能仍持续观测，但不是 `V4` 完成的阻塞项。
 
 ## 7. 最终演进方向
 
-- V3-beta：统一取消链路 + Trace 审计入 MCP
-- V4：补齐 MCP 感知层的全部能力
-- V5：补齐治理层并落地初版风险报告 Agent
+- `V4`：感知层 + 初版风险报告 Agent 双主线，已完成
+- `V5`：治理深化 + 报告增强，当前活动阶段
 
 ---
 
-更新日期：2026-04-08  
+更新日期：2026-04-09  
 定位：`架构与数据流文档`

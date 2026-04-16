@@ -1,31 +1,87 @@
 # Banking AI Demo Monorepo
 
-基于 `Flutter + FastAPI + MCP + SQLite` 的银行 AI Agent 演示项目。  
-项目定位是“答辩/演示优先”，重点展示：
+基于 `Flutter + FastAPI + MCP + SQLite + OpenAI-compatible LLM` 的手机银行风控演示项目。  
+当前活动阶段为 `V5 / Phase-3（进行中）`。`V4` 已于 2026-04-09 完成收口，完成范围为：
+- `Track-A`：感知层能力建设
+- `Track-B`：初版风险报告 Agent
 
-- AI Agent 风控提醒与二次确认流程
-- 前后端分层架构（Flutter 客户端 + FastAPI 主编排）
-- MCP 工具化能力（银行工具 + 户外知识工具）
+## 当前状态（2026-04-10）
 
-## 1. 项目结构
+- `V4` 已完成“感知层 + 初版风险报告 Agent”双主线交付。
+- 原 `V5` 的“初版风险报告 Agent”已前置并入 `V4`。
+- 原 `V3` 性能优化线已冻结，当前仅保留性能观测，不作为版本完成阻塞项。
+- 后端已完成风险报告生成、持久化、查询与 trace 审计接入。
+- Flutter 已补齐二次校验后的风险报告查看入口。
+- `V5` 当前已增强风险报告治理上下文与复核字段。
+- `V5` 当前已新增“我的页风险报告中心”，首版仅展示高风险报告。
+- `V5` 当前已新增人工复核完整闭环：用户发起、我的页查看、App 内处理台接单与关闭。
+- `V5` 当前已新增人工复核状态筛选与时间线追踪，并已开始修正为真实的提交/处理/关闭三时间点展示。
+- 自动化验收已通过：
+  - `server\.venv\Scripts\python -m pytest server\tests -q` -> `66 passed`
+  - `flutter analyze --no-version-check` -> `No issues found!`
+  - `flutter test --no-version-check test\widget_test.dart` -> `All tests passed!`
+- 之前的 Flutter 假性阻塞已解决，根因是 Flutter SDK Git 信任异常和命令执行目录错误。
 
-- `client_flutter/`：Flutter 客户端（已包含 `android/` 平台目录）
-- `server/`：FastAPI 后端、SQLite 数据、Agent 编排与测试
-- `mcp_servers/`：MCP Server（bank / outdoor）
-- `docs/`：架构说明与演示脚本
+## 版本治理规则
 
-## 2. 环境要求
+- 单一事实源：
+  - `plan.md`：唯一活动执行计划与当前阶段
+  - `MVP.md`：版本台账与里程碑状态
+  - `README.md`：对外入口与验证结论摘要
+- 每次开发后至少同步：`plan.md + MVP.md + README.md`
+- 涉及架构或变量流变化时，再同步：`nowthink.md + math.md`
+- 大版本完成（V1/V2/V3/V4/V5）必须同时满足：
+  - 对应版本验收项通过
+  - `pytest + flutter analyze + flutter test` 通过
+  - 文档同步完成且无冲突
+- 满足后执行：`git commit + git push`（默认当前工作分支）
 
-- Windows PowerShell（示例命令按 Windows 写）
-- Python `3.13`
-- Flutter SDK（建议已配置到 PATH）
-- Android Studio / Android SDK（若要跑 Android 模拟器）
+## 当前能力
 
-## 3. 快速启动（推荐）
+- 三态预检决策：`pass / interrogate / block`
+- 单轮二次质询：`pass_secondary / interrogate / block_secondary`
+- 显式取消交易：`POST /api/v1/transfers/cancel`
+- explain pack：结构化解释面板
+- 三类 Agent：领域初分、领域细分、语义分析
+- 感知层快照：`perception_snapshot` 已进入关键 trace
+- 风险报告：`secondary-check` 后生成并可按 `confirmation_token` 查询
+- 风险报告中心：当前用户最近 20 条高风险报告可在“我的”页重复查看
+- 人工复核闭环：高风险报告可申请人工复核，并在 App 内完成演示处理
+- 人工复核筛选与时间线：复核单支持按状态筛选，并能查看提交到关闭的时间线
+- 风险报告治理上下文：报告版本、策略版本、生成模式、来源阶段、风险分类、关联审计事件
+- 审计链路：`trace_events` + MCP 查询
 
-### 3.1 后端启动
+## 文档导航
 
-在项目根目录执行：
+- `README.md`
+  - 项目总入口、启动方法、验证命令
+- `MVP.md`
+  - 版本台账、完整度评估、路线图
+- `plan.md`
+  - 当前唯一执行计划
+- `nowthink.md`
+  - 架构、数据流、代码映射、最终指标
+- `math.md`
+  - 公式、变量流、风险报告后置原则、时延目标推导
+- `promode/codex_execution_rules.md`
+  - Codex 固定执行规则正文
+- `promode/development_requirements_summary.md`
+  - 历史开发要求汇总入口
+
+## 风控主链路
+
+1. 前端发起 `precheck`
+2. 后端聚合 `ClientContext`、知识库分类、外部情报
+3. `RiskEngine` 计算 `flag_s / g_behavior / g_dynamic / final_risk`
+4. 若为 `interrogate`，进入 `secondary-check`
+5. `AgentService` 做二次质询语义分析
+6. `RiskReportService` 在 `secondary-check` 之后生成结构化风险报告
+7. 最终进入 `confirm / cancel / block`
+8. 关键节点写入 `trace_events`
+
+## 快速启动
+
+### 1. 启动后端
 
 ```powershell
 py -3.13 -m venv server\.venv
@@ -33,99 +89,115 @@ server\.venv\Scripts\python -m pip install -r server\requirements.txt
 server\.venv\Scripts\python -m uvicorn server.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-启动成功后可访问：
-
+启动后访问：
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/mcp/bank`
 
-### 3.2 前端启动
-
-新开一个终端，进入 Flutter 目录：
+### 2. 启动 Flutter
 
 ```powershell
 cd client_flutter
-```
-
-#### Android 模拟器/真机
-
-```powershell
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
-```
-
-#### Web（Chrome）
-
-```powershell
 flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
 ```
 
-## 4. 演示流程（建议答辩顺序）
-
-1. 打开首页，展示后端返回的资产和最近交易。
-2. 点击 `风险演示`（预置：收款人 `小c`、金额 `8000`、城市 `北京`）。
-3. 提交预检，展示风险提醒弹窗（`review/high`）。
-4. 点击继续确认，展示转账成功和余额更新。
-5. 打开 `AI 助手`，可演示以下问题：
-   - `帮我查一下余额`
-   - `为什么刚才触发风控提醒`
-   - `给我一条露营安全建议`
-
-## 5. API 清单（当前已实现）
+## 已实现 API
 
 - `GET /api/v1/dashboard`
 - `GET /api/v1/transactions`
+- `POST /api/v1/transfers/classify-risk`
 - `POST /api/v1/transfers/precheck`
+- `POST /api/v1/transfers/secondary-check`
 - `POST /api/v1/transfers/confirm`
+- `POST /api/v1/transfers/cancel`
+- `GET /api/v1/transfers/{confirmation_token}/risk-report`
+- `GET /api/v1/transfers/risk-reports`
+- `POST /api/v1/transfers/{confirmation_token}/manual-review`
+- `GET /api/v1/manual-reviews`
+- `GET /api/v1/manual-reviews?status=...`
+- `GET /api/v1/manual-reviews/{review_id}`
+- `GET /api/v1/manual-reviews/queue`
+- `PATCH /api/v1/manual-reviews/{review_id}`
 - `POST /api/v1/agent/chat`
 
-MCP 挂载路径：
+## MCP 工具
 
-- `/mcp/bank`
-- `/mcp/outdoor`
+- 账户摘要
+- 交易列表
+- 风险分类
+- 预检
+- 外部情报筛查
+- 转账确认
+- Trace 查询：
+  - `get_transfer_trace`
+  - `list_transfer_traces`
 
-## 6. 配置说明
+## 配置说明
 
-根目录可参考 `.env.example`：
+参考根目录 `.env.example`：
 
-- `APP_ENV`：运行环境
-- `SQLITE_PATH`：SQLite 文件路径
-- `MOCK_LLM`：默认 `true`，演示时建议保持开启
-- `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`：接入真实模型时使用
-- `MCP_BANK_ENABLED` / `MCP_OUTDOOR_ENABLED`：是否挂载 MCP 路由
+- `APP_ENV`
+- `SQLITE_PATH`
+- `LLM_API_KEY`
+- `LLM_BASE_URL`
+- `LLM_MODEL`
+- `LLM_TIMEOUT_SECONDS`
+- `LLM_BENCHMARK_TIMEOUT_SECONDS`
+- `MCP_BANK_ENABLED`
 
-说明：本项目默认可在 `MOCK_LLM=true` 下完整演示，不依赖外部模型 Key。
+说明：
+- 模型密钥仅保留在后端
+- 在证明前，不允许把 `precheck` 切成全量 Agent 热路径
+- 风险报告 Agent 只负责生成说明，不负责业务裁决
 
-## 7. 测试与质量检查
+## 测试与基准命令
 
-### 后端测试
+### 后端回归
 
 ```powershell
-server\.venv\Scripts\python -m pytest server\tests -q -p no:cacheprovider
+server\.venv\Scripts\python -m pytest server\tests -q
 ```
 
-### 前端测试
+### 后端基准
+
+```powershell
+server\.venv\Scripts\python server\tests\benchmark_v3_baseline.py
+server\.venv\Scripts\python server\tests\benchmark_v3_llm_path.py
+server\.venv\Scripts\python server\tests\benchmark_v3_precheck_shadow.py
+```
+
+### 前端
 
 ```powershell
 cd client_flutter
-flutter test --no-version-check
 flutter analyze --no-version-check
+flutter test --no-version-check test\widget_test.dart
 ```
 
-## 8. 常见问题
+## 当前验证结果（2026-04-09）
 
-- `前端提示无法连接后端`
-  - 确认后端是否已在 `127.0.0.1:8000` 启动
-  - Android 模拟器请使用 `10.0.2.2` 访问宿主机
+- 后端回归：`64 passed`
+- Flutter analyze：`No issues found!`
+- Flutter widget test：`All tests passed!`
+- 风险报告链路：
+  - 404 场景已覆盖
+  - `secondary-check` 后可生成并查询报告
+  - trace 已包含 `risk_report_generated`
+- `V5` 报告增强：
+  - 已输出治理元数据
+  - Flutter 已展示治理上下文
+  - “我的”页已展示高风险报告中心
+  - 人工复核完整闭环已打通
+  - 人工复核状态筛选与时间线已打通
+- 性能：
+  - 保留既有基线观测
+  - 当前版本不将性能作为完成阻塞项
 
-- `Android 无法运行`
-  - 先执行 `flutter doctor`，补齐 Android toolchain/JDK/SDK
-  - 确认设备可见：`flutter devices`
+## 当前性能目标
 
-- `想接入真实模型`
-  - 设置 `MOCK_LLM=false`
-  - 配置后端的 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`
-  - 不要在 Flutter 客户端中放模型密钥
+- `precheck hot path <= 750ms`
+- `deterministic risk decision subpath <= 300ms`
+- `secondary-check avg <= 3s`
+- `LLM path P95 <= 30s`
 
-## 9. 参考文档
-
-- 架构说明：`docs/architecture.md`
-- 演示脚本：`docs/demo-script.md`
+这些仍作为观测目标保留，但版本完成判定以功能、自动化验收和文档一致性为主。

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from ..db import get_connection
+from ..schemas.report import RiskReportPayload
 
 
 class BankingRepository:
@@ -12,7 +13,13 @@ class BankingRepository:
         self.user_id = user_id
 
     def _now(self) -> str:
-        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    def build_confirmation_token(self) -> str:
+        return f"confirm-{uuid4().hex}"
+
+    def build_manual_review_id(self) -> str:
+        return f"review-{uuid4().hex}"
 
     def get_user_profile(self) -> dict:
         with get_connection() as connection:
@@ -21,7 +28,7 @@ class BankingRepository:
                 (self.user_id,),
             ).fetchone()
         if row is None:
-            raise ValueError("Demo user not found. Seed data is missing.")
+            raise ValueError("未找到演示用户，请先初始化种子数据。")
         return dict(row)
 
     def get_account(self) -> dict:
@@ -34,7 +41,7 @@ class BankingRepository:
                 (self.user_id,),
             ).fetchone()
         if row is None:
-            raise ValueError("Demo account not found. Seed data is missing.")
+            raise ValueError("未找到演示账户，请先初始化种子数据。")
         return dict(row)
 
     def list_transactions(self, limit: int = 20) -> list[dict]:
@@ -91,7 +98,7 @@ class BankingRepository:
         return dict(row) if row else None
 
     def recent_outgoing_transfer_count(self, minutes: int = 20) -> int:
-        since = (datetime.now(UTC) - timedelta(minutes=minutes)).strftime(
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
             "%Y-%m-%dT%H:%M:%S"
         )
         with get_connection() as connection:
@@ -120,18 +127,24 @@ class BankingRepository:
         semantic_summary: str,
         risk_level: str,
         decision: str,
+        flag_s: float,
+        g_behavior: float,
+        g_dynamic: float,
+        final_risk: float,
         reasons: list[str],
         assistant_message: str,
+        confirmation_token: str | None = None,
     ) -> str:
-        pending_id = f"confirm-{uuid4().hex}"
+        pending_id = confirmation_token or self.build_confirmation_token()
         created_at = self._now()
         with get_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO pending_transfers
                 (id, user_id, payee_name, amount, city, device_id, recent_page, last_action,
-                 semantic_summary, risk_level, decision, reasons_json, assistant_message, created_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 semantic_summary, risk_level, decision, flag_s, g_behavior, g_dynamic, final_risk,
+                 reasons_json, assistant_message, created_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                 """,
                 (
                     pending_id,
@@ -145,6 +158,10 @@ class BankingRepository:
                     semantic_summary,
                     risk_level,
                     decision,
+                    flag_s,
+                    g_behavior,
+                    g_dynamic,
+                    final_risk,
                     json.dumps(reasons, ensure_ascii=False),
                     assistant_message,
                     created_at,
@@ -152,21 +169,45 @@ class BankingRepository:
             )
         return pending_id
 
-    def get_pending_transfer(self, confirmation_token: str) -> dict:
+    def get_transfer_record(self, confirmation_token: str) -> dict | None:
         with get_connection() as connection:
             row = connection.execute(
                 """
                 SELECT *
                 FROM pending_transfers
-                WHERE id = ? AND user_id = ? AND status = 'pending'
+                WHERE id = ? AND user_id = ?
                 """,
                 (confirmation_token, self.user_id),
             ).fetchone()
         if row is None:
-            raise ValueError("Pending transfer not found or already completed.")
+            return None
         payload = dict(row)
         payload["reasons"] = json.loads(payload.pop("reasons_json"))
+        secondary_reasons = payload.pop("secondary_reasons_json", None)
+        payload["secondary_reasons"] = (
+            json.loads(secondary_reasons) if secondary_reasons else []
+        )
         return payload
+
+    def get_pending_transfer(self, confirmation_token: str) -> dict:
+        payload = self.get_transfer_record(confirmation_token)
+        if payload is None or payload["status"] != "pending":
+            raise ValueError("未找到待确认转账，或该转账已处理完成。")
+        return payload
+
+    def get_transfer_status(self, confirmation_token: str) -> str | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT status
+                FROM pending_transfers
+                WHERE id = ? AND user_id = ?
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["status"])
 
     def create_risk_event(
         self,
@@ -177,15 +218,25 @@ class BankingRepository:
         device_id: str,
         risk_level: str,
         decision: str,
+        flag_s: float,
+        g_behavior: float,
+        g_dynamic: float,
+        final_risk: float,
         reasons: list[str],
+        secondary_decision: str | None = None,
+        secondary_risk: float = 0.0,
+        secondary_reply: str | None = None,
+        policy_version: str | None = None,
     ) -> str:
         risk_event_id = f"risk-{uuid4().hex}"
         with get_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO risk_events
-                (id, user_id, payee_name, amount, city, device_id, risk_level, decision, reasons_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, payee_name, amount, city, device_id, risk_level, decision,
+                 flag_s, g_behavior, g_dynamic, final_risk, secondary_decision, secondary_risk,
+                 secondary_reply, policy_version, reasons_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     risk_event_id,
@@ -196,17 +247,150 @@ class BankingRepository:
                     device_id,
                     risk_level,
                     decision,
+                    flag_s,
+                    g_behavior,
+                    g_dynamic,
+                    final_risk,
+                    secondary_decision,
+                    secondary_risk,
+                    secondary_reply,
+                    policy_version,
                     json.dumps(reasons, ensure_ascii=False),
                     self._now(),
                 ),
             )
         return risk_event_id
 
+    def create_trace_event(
+        self,
+        *,
+        trace_id: str,
+        confirmation_token: str,
+        event_type: str,
+        stage: str,
+        decision: str | None,
+        risk_level: str | None,
+        final_risk: float,
+        payload: dict,
+    ) -> str:
+        trace_event_id = f"trace-{uuid4().hex}"
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO trace_events
+                (id, trace_id, confirmation_token, user_id, event_type, stage, decision,
+                 risk_level, final_risk, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trace_event_id,
+                    trace_id,
+                    confirmation_token,
+                    self.user_id,
+                    event_type,
+                    stage,
+                    decision,
+                    risk_level,
+                    final_risk,
+                    json.dumps(payload, ensure_ascii=False),
+                    self._now(),
+                ),
+            )
+        return trace_event_id
+
+    def get_transfer_trace(self, confirmation_token: str) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT trace_id, confirmation_token, event_type, stage, decision,
+                       risk_level, final_risk, payload_json, created_at
+                FROM trace_events
+                WHERE confirmation_token = ? AND user_id = ?
+                ORDER BY rowid ASC
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            payload = dict(row)
+            payload["payload"] = json.loads(payload.pop("payload_json"))
+            result.append(payload)
+        return result
+
+    def list_transfer_traces(self, limit: int = 20) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT trace_id, confirmation_token, event_type, stage, decision,
+                           risk_level, final_risk, payload_json, created_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY confirmation_token
+                               ORDER BY rowid DESC
+                           ) AS rn
+                    FROM trace_events
+                    WHERE user_id = ?
+                )
+                SELECT trace_id, confirmation_token, event_type, stage, decision,
+                       risk_level, final_risk, payload_json, created_at
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (self.user_id, limit),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            payload = dict(row)
+            payload["payload"] = json.loads(payload.pop("payload_json"))
+            result.append(payload)
+        return result
+
+    def update_secondary_check(
+        self,
+        *,
+        confirmation_token: str,
+        secondary_decision: str,
+        secondary_risk: float,
+        secondary_reasons: list[str],
+        secondary_question: str,
+        secondary_reply: str,
+        policy_version: str,
+    ) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE pending_transfers
+                SET secondary_decision = ?,
+                    secondary_risk = ?,
+                    secondary_reasons_json = ?,
+                    secondary_question = ?,
+                    secondary_reply = ?,
+                    secondary_checked_at = ?,
+                    policy_version = ?
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                """,
+                (
+                    secondary_decision,
+                    secondary_risk,
+                    json.dumps(secondary_reasons, ensure_ascii=False),
+                    secondary_question,
+                    secondary_reply,
+                    self._now(),
+                    policy_version,
+                    confirmation_token,
+                    self.user_id,
+                ),
+            )
+
     def get_latest_risk_event(self) -> dict | None:
         with get_connection() as connection:
             row = connection.execute(
                 """
-                SELECT payee_name, amount, city, risk_level, decision, reasons_json, created_at
+                SELECT payee_name, amount, city, risk_level, decision,
+                       flag_s, g_behavior, g_dynamic, final_risk,
+                       reasons_json, created_at
                 FROM risk_events
                 WHERE user_id = ?
                 ORDER BY datetime(created_at) DESC
@@ -222,9 +406,17 @@ class BankingRepository:
 
     def commit_transfer(self, confirmation_token: str) -> dict:
         pending = self.get_pending_transfer(confirmation_token)
+        if pending["decision"] == "block":
+            raise ValueError("该转账已被风控拦截，无法继续确认。")
+        if (
+            pending["decision"] == "interrogate"
+            and pending.get("secondary_decision") != "pass_secondary"
+        ):
+            raise ValueError("该转账尚未通过二次校验，无法继续确认。")
+
         account = self.get_account()
         if pending["amount"] > account["cash_balance"]:
-            raise ValueError("Insufficient balance for demo transfer.")
+            raise ValueError("余额不足，无法完成本次转账。")
 
         created_at = self._now()
         transaction_id = f"txn-{uuid4().hex}"
@@ -249,7 +441,7 @@ class BankingRepository:
                     transaction_id,
                     self.user_id,
                     f"转账给 {pending['payee_name']}",
-                    "AI Agent 风控确认后执行",
+                    "经智能体风控确认后执行",
                     pending["amount"],
                     pending["city"],
                     pending["payee_name"],
@@ -289,6 +481,24 @@ class BankingRepository:
             "account": latest_account,
         }
 
+    def cancel_pending_transfer(self, confirmation_token: str) -> dict:
+        pending = self.get_pending_transfer(confirmation_token)
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE pending_transfers
+                SET status = 'cancelled'
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                """,
+                (confirmation_token, self.user_id),
+            )
+        return {
+            "confirmation_token": confirmation_token,
+            "status": "cancelled",
+            "payee_name": pending["payee_name"],
+            "amount": float(pending["amount"]),
+        }
+
     def add_chat_message(self, session_id: str, role: str, content: str) -> None:
         with get_connection() as connection:
             connection.execute(
@@ -305,3 +515,250 @@ class BankingRepository:
                     self._now(),
                 ),
             )
+
+    def upsert_risk_report(
+        self,
+        *,
+        report: RiskReportPayload,
+    ) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO risk_reports
+                (confirmation_token, user_id, headline, overall_risk_level, risk_summary,
+                 risk_factors_json, recommended_action, evidence_json, governance_json, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(confirmation_token) DO UPDATE SET
+                    headline = excluded.headline,
+                    overall_risk_level = excluded.overall_risk_level,
+                    risk_summary = excluded.risk_summary,
+                    risk_factors_json = excluded.risk_factors_json,
+                    recommended_action = excluded.recommended_action,
+                    evidence_json = excluded.evidence_json,
+                    governance_json = excluded.governance_json,
+                    generated_at = excluded.generated_at
+                """,
+                (
+                    report.confirmation_token,
+                    self.user_id,
+                    report.headline,
+                    report.overall_risk_level,
+                    report.risk_summary,
+                    json.dumps(report.risk_factors, ensure_ascii=False),
+                    report.recommended_action,
+                    json.dumps(report.evidence, ensure_ascii=False),
+                    report.governance.model_dump_json(),
+                    report.generated_at,
+                ),
+            )
+
+    def get_risk_report(self, confirmation_token: str) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT confirmation_token, headline, overall_risk_level, risk_summary,
+                       risk_factors_json, recommended_action, evidence_json,
+                       governance_json, generated_at
+                FROM risk_reports
+                WHERE confirmation_token = ? AND user_id = ?
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["risk_factors"] = json.loads(payload.pop("risk_factors_json"))
+        payload["evidence"] = json.loads(payload.pop("evidence_json"))
+        payload["governance"] = json.loads(payload.pop("governance_json"))
+        return payload
+
+    def list_high_risk_reports(self, limit: int = 20) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT confirmation_token, headline, overall_risk_level, risk_summary,
+                       governance_json, generated_at
+                FROM risk_reports
+                WHERE user_id = ? AND overall_risk_level = 'high'
+                ORDER BY generated_at DESC
+                LIMIT ?
+                """,
+                (self.user_id, limit),
+            ).fetchall()
+        items: list[dict] = []
+        for row in rows:
+            governance = json.loads(row["governance_json"] or "{}")
+            items.append(
+                {
+                    "confirmation_token": row["confirmation_token"],
+                    "headline": row["headline"],
+                    "overall_risk_level": row["overall_risk_level"],
+                    "risk_summary": row["risk_summary"],
+                    "risk_category": governance.get("risk_category", ""),
+                    "policy_version": governance.get("policy_version", ""),
+                    "generation_mode": governance.get("generation_mode", ""),
+                    "generated_at": row["generated_at"],
+                }
+            )
+        return items
+
+    def create_manual_review_case(
+        self,
+        *,
+        review_id: str,
+        confirmation_token: str,
+        request_reason: str,
+        request_snapshot: dict,
+    ) -> dict:
+        created_at = self._now()
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO manual_review_cases
+                (review_id, confirmation_token, user_id, status, outcome, request_reason,
+                 request_snapshot_json, review_note, reviewer_id, in_review_at, submitted_at, updated_at, closed_at)
+                VALUES (?, ?, ?, 'submitted', NULL, ?, ?, NULL, NULL, NULL, ?, ?, NULL)
+                """,
+                (
+                    review_id,
+                    confirmation_token,
+                    self.user_id,
+                    request_reason,
+                    json.dumps(request_snapshot, ensure_ascii=False),
+                    created_at,
+                    created_at,
+                ),
+            )
+        payload = self.get_manual_review_case(review_id)
+        if payload is None:
+            raise ValueError("人工复核单创建失败。")
+        return payload
+
+    def get_open_manual_review_by_confirmation_token(
+        self, confirmation_token: str
+    ) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE confirmation_token = ? AND user_id = ? AND status != 'closed'
+                ORDER BY datetime(submitted_at) DESC
+                LIMIT 1
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchone()
+        return self._manual_review_row_to_payload(row) if row else None
+
+    def list_manual_reviews(
+        self,
+        *,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> list[dict]:
+        where_clause = "WHERE user_id = ?"
+        params: list[object] = [self.user_id]
+        if status is not None:
+            where_clause += " AND status = ?"
+            params.append(status)
+        params.append(limit)
+        with get_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                {where_clause}
+                ORDER BY datetime(submitted_at) DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._manual_review_row_to_payload(row) for row in rows]
+
+    def list_manual_review_queue(self) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE status IN ('submitted', 'in_review')
+                ORDER BY
+                    CASE status
+                        WHEN 'submitted' THEN 0
+                        WHEN 'in_review' THEN 1
+                        ELSE 2
+                    END,
+                    datetime(submitted_at) DESC
+                """
+            ).fetchall()
+        return [self._manual_review_row_to_payload(row) for row in rows]
+
+    def get_manual_review_case(self, review_id: str) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE review_id = ?
+                """,
+                (review_id,),
+            ).fetchone()
+        return self._manual_review_row_to_payload(row) if row else None
+
+    def update_manual_review_case(
+        self,
+        *,
+        review_id: str,
+        status: str,
+        outcome: str | None,
+        review_note: str | None,
+        reviewer_id: str | None,
+        in_review_at: str | None,
+    ) -> dict:
+        updated_at = self._now()
+        closed_at = updated_at if status == "closed" else None
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE manual_review_cases
+                SET status = ?,
+                    outcome = ?,
+                    review_note = ?,
+                    reviewer_id = ?,
+                    in_review_at = ?,
+                    updated_at = ?,
+                    closed_at = ?
+                WHERE review_id = ?
+                """,
+                (
+                    status,
+                    outcome,
+                    review_note,
+                    reviewer_id,
+                    in_review_at,
+                    updated_at,
+                    closed_at,
+                    review_id,
+                ),
+            )
+        payload = self.get_manual_review_case(review_id)
+        if payload is None:
+            raise ValueError("未找到对应人工复核单。")
+        return payload
+
+    def _manual_review_row_to_payload(self, row) -> dict:
+        payload = dict(row)
+        snapshot = json.loads(payload.pop("request_snapshot_json") or "{}")
+        payload["request_snapshot"] = snapshot
+        payload["headline"] = snapshot.get("headline", "")
+        payload["overall_risk_level"] = snapshot.get("overall_risk_level", "")
+        return payload
+

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .routes import agent, dashboard, transfers
+from .routes import agent, dashboard, manual_reviews, transfers
 
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(dashboard.router)
 api_router.include_router(transfers.router)
+api_router.include_router(manual_reviews.router)
 api_router.include_router(agent.router)
-

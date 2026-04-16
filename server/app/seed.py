@@ -17,8 +17,12 @@ def seed_demo_data() -> None:
         connection.execute(
             "UPDATE pending_transfers SET user_id = '小a' WHERE user_id = 'user-demo'"
         )
+        connection.execute(
+            "UPDATE manual_review_cases SET user_id = '小a' WHERE user_id = 'user-demo'"
+        )
         connection.execute("UPDATE chat_sessions SET user_id = '小a' WHERE user_id = 'user-demo'")
         connection.execute("DELETE FROM users WHERE id = 'user-demo'")
+        connection.execute("DELETE FROM manual_review_cases WHERE user_id = '小a'")
         connection.execute("DELETE FROM payees WHERE id = 'payee-zhangsan'")
         connection.execute("DELETE FROM location_profiles WHERE user_id = '小a'")
         connection.execute(

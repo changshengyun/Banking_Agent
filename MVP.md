@@ -5,8 +5,8 @@
 
 ## 1. 当前完整度评估
 
-### 最新验证状态（2026-04-09）
-- 后端核心回归：`58 passed`
+### 最新验证状态（2026-04-10）
+- 后端核心回归：`66 passed`
 - 前端正式验收：
   - `flutter analyze --no-version-check`：`No issues found!`
   - `flutter test --no-version-check test/widget_test.dart`：`All tests passed!`
@@ -34,7 +34,10 @@
 ### 当前结论
 - `V3-beta` 已完成并收口。
 - `V4` 已完成并收口。
-- 当前活动阶段已切换到：`V5 / Phase-1（启动准备中）`。
+- 当前活动阶段已切换到：`V5 / Phase-3（进行中）`。
+- 当前 `V5 / Phase-3` 正在做人工复核稳定性修复：
+  - 资源不存在统一收敛为 `404`
+  - 时间线改为真实展示 `submitted / in_review / closed` 三个时间点
 - 原 `V5` 的“初版风险报告 Agent”已并入 `V4`。
 - 新的 `V5` 定义为：治理深化与报告增强版本。
 
@@ -78,6 +81,7 @@
 - `RiskEngine`：执行 `w_adj / f_final` 主公式和阈值路由
 - `BankHostService`：主状态机、trace 审计、报告生成触发
 - `RiskReportService`：在 `secondary-check` 后生成结构化报告并持久化
+- `V5` 当前增量：报告已补充治理元数据和关联审计上下文
 
 ### HIRD-E 业务执行层
 - 当前动作：`confirm / cancel / secondary-check / risk-report view`
@@ -92,7 +96,7 @@
 | V3-alpha | 交互治理收口 + 三类 Agent + 单轮二次质询 | 已完成 | 主链路闭环完成 |
 | V3-beta | 取消交易统一 + 指标化 + Trace 审计入 MCP + 性能与体验收口 | 已完成 | 已验收 |
 | V4 | 感知层 + 初版风险报告 Agent 双主线 | 已完成 | 前后端验收通过，已收口 |
-| V5 | 治理深化 + 报告增强 | 进行中 | 当前活动版本 |
+| V5 | 治理深化 + 报告增强 | 进行中 | 已完成报告中心、人工复核闭环与复核筛选/时间线首版 |
 
 ## 5. V4 收口结果
 
@@ -105,14 +109,41 @@
 
 ### 收口判断
 - 收口结论：`Closed`
-- 下一活动阶段：`V5 / Phase-1`
+- 下一活动阶段：`V5 / Phase-3`
 
 ## 6. V5 当前方向
 
 - 治理层拒绝口径深化
 - 风险报告质量增强与模板治理
-- 报告历史中心/人工复核辅助能力
+- 报告历史中心/人工复核闭环能力
 - 更细颗粒度的审计与报告追踪字段
+
+### 当前已完成增量
+1. 风险报告新增治理元数据：
+   - `report_version`
+   - `policy_version`
+   - `generation_mode`
+   - `source_stage`
+   - `secondary_decision`
+   - `risk_category`
+   - `external_intelligence_level`
+   - `trace_events`
+2. 前端风险报告面板已新增治理上下文展示。
+3. “我的”页风险报告中心已启动，当前仅展示高风险报告。
+4. 已新增当前用户高风险报告列表接口，首版固定最近 20 条。
+5. 已新增人工复核完整闭环：
+   - 用户可从风险报告发起人工复核
+   - “我的”页可查看复核单
+   - 同 App 内置复核处理台可接单与关闭复核单
+6. 已新增人工复核 API 与持久化状态机，复核结果只做治理记录，不回写业务裁决。
+7. 已新增人工复核筛选与时间线追踪：
+   - 用户侧复核单可按状态筛选
+   - 处理台队列可按状态筛选
+   - 复核详情页已展示提交、处理中、关闭时间线
+8. 本轮自动化已通过：
+   - 后端 `66 passed`
+   - Flutter analyze `No issues found!`
+   - Flutter widget test `All tests passed!`
 
 ## 7. 文档导航
 
@@ -125,5 +156,5 @@
 ---
 
 更新日期：2026-04-09  
-当前主版本：`V5 / Phase-1（启动准备中）`  
+当前主版本：`V5 / Phase-3（进行中）`  
 上一版本状态：`V4（已完成）`

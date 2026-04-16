@@ -18,6 +18,7 @@
 - 风险报告 Agent 只做说明，不改变裁决
 - 审计链路独立，不能被 LLM 调用成败绑架
 - 所有业务状态变更都必须可追溯
+- 人工复核时间线必须对应真实状态时间点，不能拿通用更新时间字段替代
 
 ## 2. HIRD 四层架构
 
@@ -77,6 +78,7 @@
   - `cancel`
   - `secondary-check`
   - `risk-report view`
+  - `manual-review request / queue / close`
   - explain pack 展示
 
 ## 3. 数据如何流动
@@ -122,6 +124,7 @@
 6. 报告写入：
    - `risk_reports`
    - `trace_events.risk_report_generated`
+   - `governance` 元数据
 7. 前端收到：
    - `secondary_decision`
    - `semantic_red_flags`
@@ -136,11 +139,54 @@
    - `overall_risk_level`
    - `risk_summary`
    - `risk_factors`
+
+### 3.4 人工复核时间线路径
+1. 用户基于高风险报告提交人工复核申请
+2. 后端创建 `manual_review_cases`，写入：
+   - `submitted_at`
+   - `updated_at`
+   - `in_review_at = NULL`
+   - `closed_at = NULL`
+3. 处理台接单时：
+   - 状态变为 `in_review`
+   - 首次写入 `in_review_at`
+4. 处理台关闭时：
+   - 状态变为 `closed`
+   - 保留原有 `in_review_at`
+   - 写入 `closed_at`
+5. 前端时间线按真实语义展示：
+   - `submitted_at`
+   - `in_review_at`
+   - `closed_at`
    - `recommended_action`
    - `evidence`
+   - `governance`
    - `generated_at`
 
-### 3.4 确认与取消路径
+### 3.4 风险报告中心路径
+1. Flutter“我的”页调用 `GET /api/v1/transfers/risk-reports`
+2. 后端直接从 `risk_reports` 读取当前用户最近 20 条高风险报告
+3. 前端展示列表、空态、错误态和重试按钮
+4. 点击列表项后复用现有风险报告详情面板
+
+### 3.5 人工复核路径
+1. 用户在风险报告详情中调用 `POST /api/v1/transfers/{confirmation_token}/manual-review`
+2. 后端只允许高风险且已持久化的报告创建复核单
+3. 复核单写入 `manual_review_cases`
+4. trace 写入：
+   - `manual_review_requested`
+   - `manual_review_started`
+   - `manual_review_closed`
+5. Flutter“我的”页调用 `GET /api/v1/manual-reviews` 展示当前用户复核单
+   - `status=all|submitted|in_review|closed`
+6. Flutter 复核处理台调用：
+   - `GET /api/v1/manual-reviews/queue`
+   - `GET /api/v1/manual-reviews/{review_id}`
+   - `PATCH /api/v1/manual-reviews/{review_id}`
+7. 复核详情页直接根据 `submitted_at / updated_at / closed_at / reviewer_id / outcome` 渲染时间线
+8. 复核结果只做治理记录，不回写业务裁决
+
+### 3.6 确认与取消路径
 - `confirm`
   - 只允许 `pending`
   - `interrogate` 路径必须先得到 `pass_secondary`
@@ -175,6 +221,7 @@
   - 结构化风险报告生成
   - LLM JSON 优先
   - fallback 兜底
+  - `V5` 当前增强：治理元数据与复核重点
 
 ### 持久化与审计
 - `server/app/repositories/banking.py`
@@ -182,8 +229,11 @@
   - `risk_events`
   - `trace_events`
   - `risk_reports`
+  - `manual_review_cases`
 - `server/app/schemas/report.py`
-  - 风险报告结构化 schema
+  - 风险报告详情与列表 schema
+- `server/app/schemas/manual_review.py`
+  - 人工复核单 schema
 - `mcp_servers/bank_server.py`
   - 当前继续承接审计查询工具
   - 风险报告暂未作为 MCP 独立工具暴露
@@ -191,9 +241,12 @@
 ### 前端映射
 - `client_flutter/lib/banking_api.dart`
   - 新增 `fetchRiskReport()`
+  - 新增人工复核请求、详情、队列与更新模型
 - `client_flutter/lib/main.dart`
   - 二次校验后加载报告
-  - `_RiskReportSheet` 展示结构化摘要
+  - `_RiskReportSheet` 展示结构化摘要和治理上下文
+  - “我的”页展示高风险报告中心
+  - “我的”页展示人工复核单与复核处理台
 
 ## 5. 为什么当前不把 precheck 全走 Agent
 
@@ -239,8 +292,9 @@
 
 - `V4`：感知层 + 初版风险报告 Agent 双主线，已完成
 - `V5`：治理深化 + 报告增强，当前活动阶段
+- 当前已完成增量：风险报告治理元数据、前端治理上下文展示、我的页报告中心、人工复核完整闭环、人工复核筛选与时间线
 
 ---
 
-更新日期：2026-04-09  
+更新日期：2026-04-10  
 定位：`架构与数据流文档`

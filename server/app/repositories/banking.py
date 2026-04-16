@@ -18,6 +18,9 @@ class BankingRepository:
     def build_confirmation_token(self) -> str:
         return f"confirm-{uuid4().hex}"
 
+    def build_manual_review_id(self) -> str:
+        return f"review-{uuid4().hex}"
+
     def get_user_profile(self) -> dict:
         with get_connection() as connection:
             row = connection.execute(
@@ -523,8 +526,8 @@ class BankingRepository:
                 """
                 INSERT INTO risk_reports
                 (confirmation_token, user_id, headline, overall_risk_level, risk_summary,
-                 risk_factors_json, recommended_action, evidence_json, generated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 risk_factors_json, recommended_action, evidence_json, governance_json, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(confirmation_token) DO UPDATE SET
                     headline = excluded.headline,
                     overall_risk_level = excluded.overall_risk_level,
@@ -532,6 +535,7 @@ class BankingRepository:
                     risk_factors_json = excluded.risk_factors_json,
                     recommended_action = excluded.recommended_action,
                     evidence_json = excluded.evidence_json,
+                    governance_json = excluded.governance_json,
                     generated_at = excluded.generated_at
                 """,
                 (
@@ -543,6 +547,7 @@ class BankingRepository:
                     json.dumps(report.risk_factors, ensure_ascii=False),
                     report.recommended_action,
                     json.dumps(report.evidence, ensure_ascii=False),
+                    report.governance.model_dump_json(),
                     report.generated_at,
                 ),
             )
@@ -552,7 +557,8 @@ class BankingRepository:
             row = connection.execute(
                 """
                 SELECT confirmation_token, headline, overall_risk_level, risk_summary,
-                       risk_factors_json, recommended_action, evidence_json, generated_at
+                       risk_factors_json, recommended_action, evidence_json,
+                       governance_json, generated_at
                 FROM risk_reports
                 WHERE confirmation_token = ? AND user_id = ?
                 """,
@@ -563,5 +569,196 @@ class BankingRepository:
         payload = dict(row)
         payload["risk_factors"] = json.loads(payload.pop("risk_factors_json"))
         payload["evidence"] = json.loads(payload.pop("evidence_json"))
+        payload["governance"] = json.loads(payload.pop("governance_json"))
+        return payload
+
+    def list_high_risk_reports(self, limit: int = 20) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT confirmation_token, headline, overall_risk_level, risk_summary,
+                       governance_json, generated_at
+                FROM risk_reports
+                WHERE user_id = ? AND overall_risk_level = 'high'
+                ORDER BY generated_at DESC
+                LIMIT ?
+                """,
+                (self.user_id, limit),
+            ).fetchall()
+        items: list[dict] = []
+        for row in rows:
+            governance = json.loads(row["governance_json"] or "{}")
+            items.append(
+                {
+                    "confirmation_token": row["confirmation_token"],
+                    "headline": row["headline"],
+                    "overall_risk_level": row["overall_risk_level"],
+                    "risk_summary": row["risk_summary"],
+                    "risk_category": governance.get("risk_category", ""),
+                    "policy_version": governance.get("policy_version", ""),
+                    "generation_mode": governance.get("generation_mode", ""),
+                    "generated_at": row["generated_at"],
+                }
+            )
+        return items
+
+    def create_manual_review_case(
+        self,
+        *,
+        review_id: str,
+        confirmation_token: str,
+        request_reason: str,
+        request_snapshot: dict,
+    ) -> dict:
+        created_at = self._now()
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO manual_review_cases
+                (review_id, confirmation_token, user_id, status, outcome, request_reason,
+                 request_snapshot_json, review_note, reviewer_id, in_review_at, submitted_at, updated_at, closed_at)
+                VALUES (?, ?, ?, 'submitted', NULL, ?, ?, NULL, NULL, NULL, ?, ?, NULL)
+                """,
+                (
+                    review_id,
+                    confirmation_token,
+                    self.user_id,
+                    request_reason,
+                    json.dumps(request_snapshot, ensure_ascii=False),
+                    created_at,
+                    created_at,
+                ),
+            )
+        payload = self.get_manual_review_case(review_id)
+        if payload is None:
+            raise ValueError("人工复核单创建失败。")
+        return payload
+
+    def get_open_manual_review_by_confirmation_token(
+        self, confirmation_token: str
+    ) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE confirmation_token = ? AND user_id = ? AND status != 'closed'
+                ORDER BY datetime(submitted_at) DESC
+                LIMIT 1
+                """,
+                (confirmation_token, self.user_id),
+            ).fetchone()
+        return self._manual_review_row_to_payload(row) if row else None
+
+    def list_manual_reviews(
+        self,
+        *,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> list[dict]:
+        where_clause = "WHERE user_id = ?"
+        params: list[object] = [self.user_id]
+        if status is not None:
+            where_clause += " AND status = ?"
+            params.append(status)
+        params.append(limit)
+        with get_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                {where_clause}
+                ORDER BY datetime(submitted_at) DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._manual_review_row_to_payload(row) for row in rows]
+
+    def list_manual_review_queue(self) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE status IN ('submitted', 'in_review')
+                ORDER BY
+                    CASE status
+                        WHEN 'submitted' THEN 0
+                        WHEN 'in_review' THEN 1
+                        ELSE 2
+                    END,
+                    datetime(submitted_at) DESC
+                """
+            ).fetchall()
+        return [self._manual_review_row_to_payload(row) for row in rows]
+
+    def get_manual_review_case(self, review_id: str) -> dict | None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT review_id, confirmation_token, user_id, status, outcome, request_reason,
+                       request_snapshot_json, review_note, reviewer_id, in_review_at,
+                       submitted_at, updated_at, closed_at
+                FROM manual_review_cases
+                WHERE review_id = ?
+                """,
+                (review_id,),
+            ).fetchone()
+        return self._manual_review_row_to_payload(row) if row else None
+
+    def update_manual_review_case(
+        self,
+        *,
+        review_id: str,
+        status: str,
+        outcome: str | None,
+        review_note: str | None,
+        reviewer_id: str | None,
+        in_review_at: str | None,
+    ) -> dict:
+        updated_at = self._now()
+        closed_at = updated_at if status == "closed" else None
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE manual_review_cases
+                SET status = ?,
+                    outcome = ?,
+                    review_note = ?,
+                    reviewer_id = ?,
+                    in_review_at = ?,
+                    updated_at = ?,
+                    closed_at = ?
+                WHERE review_id = ?
+                """,
+                (
+                    status,
+                    outcome,
+                    review_note,
+                    reviewer_id,
+                    in_review_at,
+                    updated_at,
+                    closed_at,
+                    review_id,
+                ),
+            )
+        payload = self.get_manual_review_case(review_id)
+        if payload is None:
+            raise ValueError("未找到对应人工复核单。")
+        return payload
+
+    def _manual_review_row_to_payload(self, row) -> dict:
+        payload = dict(row)
+        snapshot = json.loads(payload.pop("request_snapshot_json") or "{}")
+        payload["request_snapshot"] = snapshot
+        payload["headline"] = snapshot.get("headline", "")
+        payload["overall_risk_level"] = snapshot.get("overall_risk_level", "")
         return payload
 

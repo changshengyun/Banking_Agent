@@ -546,11 +546,11 @@ class AgentService:
         }
 
     def _detect_semantic_red_flags(self, user_reply: str) -> list[str]:
-        normalized_reply = self._normalize_text(user_reply)
+        normalized_reply = nlp_utils.normalize_text(user_reply)
         red_flags: list[str] = []
         for label, phrases in SEMANTIC_RED_FLAG_RULES.items():
             if any(
-                self._contains_affirmative_phrase(normalized_reply, phrase)
+                nlp_utils.contains_affirmative(normalized_reply, phrase)
                 for phrase in phrases
             ):
                 red_flags.append(label)
@@ -646,108 +646,23 @@ class AgentService:
         )
 
     def _looks_like_low_risk_explanation(self, user_reply: str) -> bool:
-        normalized_reply = self._normalize_text(user_reply)
+        normalized_reply = nlp_utils.normalize_text(user_reply)
         relation_hits = sum(
             1
             for term in LOW_RISK_RELATION_TERMS
-            if self._contains_affirmative_phrase(normalized_reply, term)
+            if nlp_utils.contains_affirmative(normalized_reply, term)
         )
         purpose_hits = sum(
             1
             for term in LOW_RISK_PURPOSE_TERMS
-            if self._contains_affirmative_phrase(normalized_reply, term)
+            if nlp_utils.contains_affirmative(normalized_reply, term)
         )
         negated_high_risk_hits = sum(
             1
             for term in HIGH_RISK_TERMS
-            if self._contains_negated_phrase(normalized_reply, term)
+            if nlp_utils.contains_negated(normalized_reply, term)
         )
         return relation_hits > 0 and purpose_hits > 0 and negated_high_risk_hits > 0
-
-    def _contains_affirmative_phrase(self, normalized_reply: str, phrase: str) -> bool:
-        affirmative_sentences, negated_sentences = self._sentence_polarity(
-            text=normalized_reply,
-            phrase=phrase,
-        )
-        return bool(affirmative_sentences - negated_sentences)
-
-    def _contains_negated_phrase(self, normalized_reply: str, phrase: str) -> bool:
-        _, negated_sentences = self._sentence_polarity(
-            text=normalized_reply,
-            phrase=phrase,
-        )
-        return bool(negated_sentences)
-
-    def _sentence_polarity(
-        self,
-        *,
-        text: str,
-        phrase: str,
-    ) -> tuple[set[int], set[int]]:
-        affirmative_sentences: set[int] = set()
-        negated_sentences: set[int] = set()
-        normalized_phrase = self._normalize_text(phrase)
-        for start in self._find_phrase_positions(text, normalized_phrase):
-            sentence_start, _ = self._sentence_span(text=text, start=start)
-            if self._is_negated_occurrence(
-                text=text,
-                start=start,
-                phrase=normalized_phrase,
-            ):
-                negated_sentences.add(sentence_start)
-            else:
-                affirmative_sentences.add(sentence_start)
-        return affirmative_sentences, negated_sentences
-
-    def _find_phrase_positions(self, text: str, phrase: str) -> list[int]:
-        positions: list[int] = []
-        if not phrase:
-            return positions
-        start = 0
-        while True:
-            index = text.find(phrase, start)
-            if index < 0:
-                break
-            positions.append(index)
-            start = index + len(phrase)
-        return positions
-
-    def _is_negated_occurrence(self, *, text: str, start: int, phrase: str) -> bool:
-        clause_start, clause_end = self._clause_span(text=text, start=start)
-        left_clause = text[clause_start:start]
-        right_clause = text[start + len(phrase):clause_end]
-        negation_scope = left_clause[-12:]
-        if any(cue in negation_scope for cue in CONTRAST_CUES):
-            return False
-        return any(cue in negation_scope for cue in NEGATION_CUES) or any(
-            right_clause.startswith(cue) for cue in ("没有", "没", "未", "不")
-        )
-
-    def _clause_span(self, *, text: str, start: int) -> tuple[int, int]:
-        left = 0
-        for index in range(start - 1, -1, -1):
-            if text[index] in CLAUSE_DELIMITERS:
-                left = index + 1
-                break
-        right = len(text)
-        for index in range(start, len(text)):
-            if text[index] in CLAUSE_DELIMITERS:
-                right = index
-                break
-        return left, right
-
-    def _sentence_span(self, *, text: str, start: int) -> tuple[int, int]:
-        left = 0
-        for index in range(start - 1, -1, -1):
-            if text[index] in SENTENCE_DELIMITERS:
-                left = index + 1
-                break
-        right = len(text)
-        for index in range(start, len(text)):
-            if text[index] in SENTENCE_DELIMITERS:
-                right = index
-                break
-        return left, right
 
     def _build_red_flag_block_result(
         self,
@@ -791,11 +706,11 @@ class AgentService:
         risk_category: str,
         verification_points: list[str],
     ) -> bool:
-        normalized_reply = self._normalize_text(user_reply)
+        normalized_reply = nlp_utils.normalize_text(user_reply)
         if not normalized_reply:
             return True
         if any(
-            self._normalize_text(pattern) in normalized_reply
+            nlp_utils.normalize_text(pattern) in normalized_reply
             for pattern in GENERIC_EVASIVE_PATTERNS
         ):
             return True
@@ -846,15 +761,15 @@ class AgentService:
             "房租",
             "还款",
         }
-        normalized_text = self._normalize_text(text)
+        normalized_text = nlp_utils.normalize_text(text)
         return {
             keyword
             for keyword in keywords
-            if self._normalize_text(keyword) in normalized_text
+            if nlp_utils.normalize_text(keyword) in normalized_text
         }
 
     def _normalize_text(self, text: str) -> str:
-        return text.strip().lower().replace(" ", "")
+        return nlp_utils.normalize_text(text)
 
     def _parse_suggested_actions(self, actions_raw: object) -> list[SuggestedAction]:
         actions: list[SuggestedAction] = []

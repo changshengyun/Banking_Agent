@@ -91,6 +91,10 @@ def test_secondary_check_generates_persisted_risk_report() -> None:
     assert isinstance(body["risk_factors"], list)
     assert body["recommended_action"]
     assert isinstance(body["evidence"], list)
+    assert body["governance"]["report_version"] == "v2"
+    assert body["governance"]["policy_version"] == "secondary_policy_v1"
+    assert body["governance"]["source_stage"] == "secondary-check"
+    assert "risk_report_generated" in body["governance"]["trace_events"]
     assert body["generated_at"]
 
 
@@ -144,3 +148,99 @@ def test_secondary_check_trace_includes_risk_report_event() -> None:
 
     items = get_bank_host_service().repository.get_transfer_trace(token)
     assert "risk_report_generated" in [item["event_type"] for item in items]
+    report_event = next(
+        item for item in items if item["event_type"] == "risk_report_generated"
+    )
+    assert report_event["payload"]["report_version"] == "v2"
+    assert report_event["payload"]["policy_version"] == "secondary_policy_v1"
+
+
+def test_high_risk_report_list_returns_latest_high_risk_only() -> None:
+    from fastapi.testclient import TestClient
+
+    from server.app.main import app
+    from server.app.schemas.report import RiskReportGovernancePayload
+    from server.app.schemas.report import RiskReportPayload
+    from server.app.services.bank_host import get_bank_host_service
+
+    with TestClient(app) as client:
+        repository = get_bank_host_service().repository
+        repository.upsert_risk_report(
+            report=RiskReportPayload(
+                confirmation_token="report-high-new",
+                headline="高风险转账报告-新",
+                overall_risk_level="high",
+                risk_summary="新的高风险报告",
+                risk_factors=["语义红旗"],
+                recommended_action="人工复核",
+                evidence=["证据A"],
+                governance=RiskReportGovernancePayload(
+                    report_version="v2",
+                    policy_version="secondary_policy_v1",
+                    generation_mode="fallback",
+                    source_stage="secondary-check",
+                    secondary_decision="block_secondary",
+                    risk_category="safe_account_scam",
+                    external_intelligence_level="high",
+                    trace_events=["secondary_decided", "risk_report_generated"],
+                ),
+                generated_at="2099-04-10T12:00:00Z",
+            )
+        )
+        repository.upsert_risk_report(
+            report=RiskReportPayload(
+                confirmation_token="report-medium-ignore",
+                headline="中风险报告",
+                overall_risk_level="medium",
+                risk_summary="不应出现在高风险列表中",
+                risk_factors=["中风险因子"],
+                recommended_action="继续观察",
+                evidence=["证据B"],
+                governance=RiskReportGovernancePayload(
+                    report_version="v2",
+                    policy_version="secondary_policy_v1",
+                    generation_mode="fallback",
+                    source_stage="secondary-check",
+                    secondary_decision="interrogate",
+                    risk_category="remote_large_transfer",
+                    external_intelligence_level="medium",
+                    trace_events=["secondary_decided", "risk_report_generated"],
+                ),
+                generated_at="2099-04-10T11:00:00Z",
+            )
+        )
+        repository.upsert_risk_report(
+            report=RiskReportPayload(
+                confirmation_token="report-high-old",
+                headline="高风险转账报告-旧",
+                overall_risk_level="high",
+                risk_summary="旧的高风险报告",
+                risk_factors=["外部情报"],
+                recommended_action="人工复核",
+                evidence=["证据C"],
+                governance=RiskReportGovernancePayload(
+                    report_version="v2",
+                    policy_version="secondary_policy_v1",
+                    generation_mode="llm",
+                    source_stage="secondary-check",
+                    secondary_decision="block_secondary",
+                    risk_category="loan_scam",
+                    external_intelligence_level="high",
+                    trace_events=["secondary_decided", "risk_report_generated"],
+                ),
+                generated_at="2099-04-10T10:00:00Z",
+            )
+        )
+        response = client.get("/api/v1/transfers/risk-reports")
+        assert response.status_code == 200
+        body = response.json()
+
+    tokens = [item["confirmation_token"] for item in body["items"]]
+    assert "report-medium-ignore" not in tokens
+    assert tokens.index("report-high-new") < tokens.index("report-high-old")
+    first_item = next(
+        item for item in body["items"] if item["confirmation_token"] == "report-high-new"
+    )
+    assert first_item["risk_category"] == "safe_account_scam"
+    assert first_item["policy_version"] == "secondary_policy_v1"
+    assert first_item["generation_mode"] == "fallback"

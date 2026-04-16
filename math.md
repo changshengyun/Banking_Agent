@@ -135,17 +135,20 @@ hard_block = True -> final_risk = 1.0 -> block
 - `risk_factors`
 - `recommended_action`
 - `evidence`
+- `governance`
 - `generated_at`
 
 这些输出流向：
 - `risk_reports`
 - `trace_events.risk_report_generated`
+- `GET /api/v1/transfers/risk-reports`
 - `GET /api/v1/transfers/{confirmation_token}/risk-report`
 - Flutter 风险报告面板
 
 ### 3.6 执行层与审计层
 - `confirm -> trace_events.transfer_confirmed`
 - `cancel -> trace_events.transfer_cancelled`
+- `manual_review -> trace_events.manual_review_*`
 - 非法重复操作 -> `trace_events.transfer_rejected`
 - `precheck_decided.payload` 最小性能字段：
   - `timing_total_ms`
@@ -164,8 +167,33 @@ hard_block = True -> final_risk = 1.0 -> block
 - `risk_report_generated.payload` 最小字段：
   - `headline`
   - `overall_risk_level`
+  - `report_version`
+  - `generation_mode`
+  - `policy_version`
   - `risk_factors`
   - `generated_at`
+
+### 3.7 人工复核数据流
+`manual_review` 输入：
+- `confirmation_token`
+- `request_reason`
+- 风险报告结构化快照
+
+输出：
+- `review_id`
+- `status`
+- `outcome`
+- `review_note`
+- `reviewer_id`
+- `submitted_at / updated_at / closed_at`
+
+这些输出流向：
+- `manual_review_cases`
+- `GET /api/v1/manual-reviews`
+- `GET /api/v1/manual-reviews?status=...`
+- `GET /api/v1/manual-reviews/queue`
+- `GET /api/v1/manual-reviews/{review_id}`
+- `PATCH /api/v1/manual-reviews/{review_id}`
 
 ## 4. 当前场景算例
 
@@ -251,10 +279,14 @@ hard_block = True -> final_risk = 1.0 -> block
 - FraudNet: `https://www.fraud.net/solutions/transaction-monitoring`
 - NN/g: `https://www.nngroup.com/articles/response-times-3-important-limits/`
 
-### 6.4 当前项目工程结论（2026-04-09）
-- 后端回归：`58 passed`
+### 6.4 当前项目工程结论（2026-04-10）
+- 后端回归：`66 passed`
 - Flutter analyze：`No issues found!`
 - Flutter widget test：`All tests passed!`
+- `V5` 当前增强：风险报告已补充治理元数据，前端已展示治理上下文。
+- `V5` 当前增强：我的页已展示高风险报告中心，列表直接来自 `risk_reports` 持久化结果。
+- `V5` 当前增强：人工复核单已持久化并形成 `submitted -> in_review -> closed` 的完整闭环。
+- `V5` 当前增强：人工复核单已支持按状态筛选，并可根据状态时间字段生成时间线。
 - 性能口径：
   - 继续保留既有 benchmark 和 warm/cold 基线
   - 当前 `V4` 完成判定不以性能专项优化作为阻塞项

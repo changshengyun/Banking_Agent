@@ -23,11 +23,7 @@ except ImportError:
     HAS_FASTEMBED = False
 
 
-def normalize_text(text: str) -> str:
-    """统一的文本归一化工具，HIRD-P 层通用。"""
-    if not text:
-        return ""
-    return text.strip().lower().replace(" ", "")
+from ..utils.nlp_utils import normalize_text
 
 
 class EmbeddingService:

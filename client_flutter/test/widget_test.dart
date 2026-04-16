@@ -36,7 +36,9 @@ void main() {
     expect(find.text('Salary Credit'), findsOneWidget);
   });
 
-  testWidgets('shows all explain nodes in secondary dialog', (WidgetTester tester) async {
+  testWidgets('shows all explain nodes in secondary dialog', (
+    WidgetTester tester,
+  ) async {
     tester.view.physicalSize = const Size(1280, 2200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() {
@@ -100,7 +102,239 @@ void main() {
 
     expect(find.text('风险报告'), findsOneWidget);
     expect(find.textContaining('风险因子'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('治理上下文'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pump();
+    expect(find.text('治理上下文'), findsOneWidget);
+    expect(find.text('策略版本'), findsOneWidget);
   });
+
+  testWidgets('shows report center in profile tab and opens report detail', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(MyApp(apiClient: _FakeApiClient()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('风险报告中心'), findsOneWidget);
+    expect(find.text('高风险报告'), findsOneWidget);
+    expect(find.textContaining('高风险转账报告'), findsOneWidget);
+
+    await tester.tap(find.textContaining('高风险转账报告'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('风险报告'), findsOneWidget);
+  });
+
+  testWidgets('shows empty state when no high risk reports exist', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MyApp(
+        apiClient: _FakeApiClient(
+          highRiskReports: const <RiskReportListItemData>[],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('当前没有高风险报告'), findsOneWidget);
+  });
+
+  testWidgets('shows report center retry when list loading fails', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient(
+      highRiskReportsError: const ApiException('报告中心暂时不可用'),
+    );
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('报告中心暂时不可用'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+  });
+
+  testWidgets('shows manual review list in profile tab', (
+    WidgetTester tester,
+  ) async {
+    final ManualReviewSummaryData summary = _sampleManualReviewSummary();
+    await tester.pumpWidget(
+      MyApp(
+        apiClient: _FakeApiClient(
+          manualReviews: <ManualReviewSummaryData>[summary],
+          manualReviewDetails: <String, ManualReviewDetailData>{
+            summary.reviewId: _sampleManualReviewDetail(),
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('我的复核单'), 300);
+    await tester.pump();
+    expect(find.text('我的复核单'), findsOneWidget);
+    expect(find.text(summary.requestReason), findsOneWidget);
+  });
+
+  testWidgets('can request manual review from risk report sheet', (
+    WidgetTester tester,
+  ) async {
+    final _FakeApiClient apiClient = _FakeApiClient();
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('高风险转账报告'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('申请人工复核'),
+      250,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pump();
+    expect(find.text('申请人工复核'), findsOneWidget);
+    await tester.tap(find.text('申请人工复核'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byType(TextField).last,
+      '对方身份和资金用途仍然存在明显矛盾，需要人工进一步核验。',
+    );
+    await tester.tap(find.text('提交复核申请'));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.createManualReviewCallCount, 1);
+    expect(find.text('复核单详情'), findsOneWidget);
+    expect(find.textContaining('申请原因'), findsOneWidget);
+  });
+
+  testWidgets('review console can start and close review case', (
+    WidgetTester tester,
+  ) async {
+    final ManualReviewSummaryData summary = _sampleManualReviewSummary();
+    final ManualReviewDetailData detail = _sampleManualReviewDetail();
+    final _FakeApiClient apiClient = _FakeApiClient(
+      manualReviews: <ManualReviewSummaryData>[summary],
+      manualReviewQueue: <ManualReviewQueueItemData>[
+        _sampleManualReviewQueueItem(),
+      ],
+      manualReviewDetails: <String, ManualReviewDetailData>{
+        summary.reviewId: detail,
+      },
+    );
+
+    await tester.pumpWidget(MyApp(apiClient: apiClient));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('复核处理台'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('待处理'), findsWidgets);
+    await tester.tap(find.text(detail.headline).first);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('开始处理'), 250);
+    await tester.pump();
+    await tester.tap(find.text('开始处理'));
+    await tester.pumpAndSettle();
+    expect(apiClient.updateManualReviewCallCount, 1);
+
+    await tester.scrollUntilVisible(find.text('关闭复核单'), 250);
+    await tester.pump();
+    await tester.tap(find.text('关闭复核单'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '维持原结论，建议继续通过官方渠道核验。');
+    await tester.tap(find.text('提交处理结果'));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.updateManualReviewCallCount, 2);
+    await tester.scrollUntilVisible(find.text('当前复核单已关闭，无进一步处理动作。'), 250);
+    await tester.pump();
+    expect(find.text('当前复核单已关闭，无进一步处理动作。'), findsOneWidget);
+  });
+
+  testWidgets('manual review filter chips can show closed reviews only', (
+    WidgetTester tester,
+  ) async {
+    final ManualReviewSummaryData submitted = _sampleManualReviewSummary();
+    final ManualReviewSummaryData closed = _sampleClosedManualReviewSummary();
+    await tester.pumpWidget(
+      MyApp(
+        apiClient: _FakeApiClient(
+          manualReviews: <ManualReviewSummaryData>[submitted, closed],
+          manualReviewDetails: <String, ManualReviewDetailData>{
+            submitted.reviewId: _sampleManualReviewDetail(),
+            closed.reviewId: _sampleClosedManualReviewDetail(),
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('我的复核单'), 300);
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(ChoiceChip, '已关闭').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text(closed.requestReason), findsOneWidget);
+    expect(find.text(submitted.requestReason), findsNothing);
+  });
+
+  testWidgets(
+    'closed manual review timeline keeps distinct in-review timestamp',
+    (WidgetTester tester) async {
+      final ManualReviewSummaryData closed = _sampleClosedManualReviewSummary();
+      await tester.pumpWidget(
+        MyApp(
+          apiClient: _FakeApiClient(
+            manualReviews: <ManualReviewSummaryData>[closed],
+            manualReviewDetails: <String, ManualReviewDetailData>{
+              closed.reviewId: _sampleClosedManualReviewDetail(),
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('我的'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('我的复核单'), 300);
+      await tester.pump();
+      await tester.tap(find.text(closed.requestReason));
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('复核时间线'),
+        250,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.pump();
+      expect(find.text('2026-04-10T09:00:00Z'), findsWidgets);
+      expect(find.text('2026-04-10T09:30:00Z'), findsOneWidget);
+      expect(find.text('2026-04-10T11:00:00Z'), findsWidgets);
+    },
+  );
 
   testWidgets('shows unified invalid input message for empty ai input', (
     WidgetTester tester,
@@ -132,7 +366,9 @@ void main() {
           matchedKeywords: <String>['borrow money'],
           matchedScenarios: <String>['borrow_money_impersonation'],
           analysis: 'Need a more direct explanation.',
-          followUpQuestions: <String>['What is your relationship with the payee?'],
+          followUpQuestions: <String>[
+            'What is your relationship with the payee?',
+          ],
           suggestedReplyExamples: <String>['The payee is my colleague.'],
         ),
         explainPack: ExplainPackData(
@@ -320,44 +556,44 @@ void mainDataContractTests() {
 
   test('parses explain pack for secondary payload', () {
     final TransferSecondaryCheckResult result =
-        TransferSecondaryCheckResult.fromJson(
-      <String, dynamic>{
-        'secondary_decision': 'block_secondary',
-        'reasons': <String>['high risk keyword'],
-        'final_risk_after_secondary': 0.93,
-        'assistant_message': 'Secondary check failed.',
-        'risk_classification': <String, dynamic>{
-          'risk_category': 'safe_account_scam',
-          'risk_level': 'high',
-          'block_hint': true,
-          'matched_keywords': <String>['safe account'],
-          'matched_scenarios': <String>['safe_account_scam'],
-          'analysis': 'Matched high-risk scam phrase.',
-          'follow_up_questions': <String>['Did anyone ask for a code?'],
-          'suggested_reply_examples': <String>['The caller asked for a verification code.'],
-        },
-        'explain_pack': <String, dynamic>{
-          'headline': 'Secondary check failed',
-          'recommended_action': 'Stop the transfer and contact support',
-          'score_breakdown': <String, dynamic>{
-            'flag_s': 0.8,
-            'g_behavior': 0.7,
-            'g_dynamic': 0.95,
-            'final_risk': 0.93,
+        TransferSecondaryCheckResult.fromJson(<String, dynamic>{
+          'secondary_decision': 'block_secondary',
+          'reasons': <String>['high risk keyword'],
+          'final_risk_after_secondary': 0.93,
+          'assistant_message': 'Secondary check failed.',
+          'risk_classification': <String, dynamic>{
+            'risk_category': 'safe_account_scam',
+            'risk_level': 'high',
+            'block_hint': true,
+            'matched_keywords': <String>['safe account'],
+            'matched_scenarios': <String>['safe_account_scam'],
+            'analysis': 'Matched high-risk scam phrase.',
+            'follow_up_questions': <String>['Did anyone ask for a code?'],
+            'suggested_reply_examples': <String>[
+              'The caller asked for a verification code.',
+            ],
           },
-          'nodes': <Map<String, dynamic>>[
-            <String, dynamic>{
-              'id': 'semantic',
-              'title': 'Semantic Signal',
-              'level': 'high',
-              'summary': 'Matched scam language',
-              'detail': 'Contains safe-account and code-sharing cues',
-              'score': 0.95,
+          'explain_pack': <String, dynamic>{
+            'headline': 'Secondary check failed',
+            'recommended_action': 'Stop the transfer and contact support',
+            'score_breakdown': <String, dynamic>{
+              'flag_s': 0.8,
+              'g_behavior': 0.7,
+              'g_dynamic': 0.95,
+              'final_risk': 0.93,
             },
-          ],
-        },
-      },
-    );
+            'nodes': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'semantic',
+                'title': 'Semantic Signal',
+                'level': 'high',
+                'summary': 'Matched scam language',
+                'detail': 'Contains safe-account and code-sharing cues',
+                'score': 0.95,
+              },
+            ],
+          },
+        });
 
     expect(result.explainPack.headline, 'Secondary check failed');
     expect(result.explainPack.nodes.first.title, 'Semantic Signal');
@@ -367,24 +603,24 @@ void mainDataContractTests() {
 
   test('builds fallback explain pack for single-round interrogate payload', () {
     final TransferSecondaryCheckResult result =
-        TransferSecondaryCheckResult.fromJson(
-      <String, dynamic>{
-        'secondary_decision': 'interrogate',
-        'reasons': <String>['need more evidence'],
-        'final_risk_after_secondary': 0.66,
-        'assistant_message': 'Secondary explanation is insufficient.',
-        'risk_classification': <String, dynamic>{
-          'risk_category': 'borrow_money_impersonation',
-          'risk_level': 'medium',
-          'block_hint': false,
-          'matched_keywords': <String>['borrow money'],
-          'matched_scenarios': <String>['borrow_money_impersonation'],
-          'analysis': 'Need a more direct explanation.',
-          'follow_up_questions': <String>['What is your relationship with the payee?'],
-          'suggested_reply_examples': <String>['The payee is my colleague.'],
-        },
-      },
-    );
+        TransferSecondaryCheckResult.fromJson(<String, dynamic>{
+          'secondary_decision': 'interrogate',
+          'reasons': <String>['need more evidence'],
+          'final_risk_after_secondary': 0.66,
+          'assistant_message': 'Secondary explanation is insufficient.',
+          'risk_classification': <String, dynamic>{
+            'risk_category': 'borrow_money_impersonation',
+            'risk_level': 'medium',
+            'block_hint': false,
+            'matched_keywords': <String>['borrow money'],
+            'matched_scenarios': <String>['borrow_money_impersonation'],
+            'analysis': 'Need a more direct explanation.',
+            'follow_up_questions': <String>[
+              'What is your relationship with the payee?',
+            ],
+            'suggested_reply_examples': <String>['The payee is my colleague.'],
+          },
+        });
 
     expect(result.explainPack.headline, '二次说明未通过');
     expect(result.explainPack.recommendedAction, '当前转账不得继续确认，请关闭或取消交易。');
@@ -392,9 +628,136 @@ void mainDataContractTests() {
   });
 }
 
+ManualReviewSummaryData _sampleManualReviewSummary() {
+  return const ManualReviewSummaryData(
+    reviewId: 'review-001',
+    confirmationToken: 'report-high-001',
+    status: 'submitted',
+    outcome: null,
+    requestReason: '这笔交易的用途说明和关系描述有冲突，需要人工进一步核验。',
+    headline: '高风险转账报告',
+    overallRiskLevel: 'high',
+    submittedAt: '2026-04-10T10:00:00Z',
+    updatedAt: '2026-04-10T10:00:00Z',
+    closedAt: null,
+  );
+}
+
+ManualReviewQueueItemData _sampleManualReviewQueueItem() {
+  return const ManualReviewQueueItemData(
+    reviewId: 'review-001',
+    confirmationToken: 'report-high-001',
+    userId: '小a',
+    status: 'submitted',
+    outcome: null,
+    requestReason: '这笔交易的用途说明和关系描述有冲突，需要人工进一步核验。',
+    headline: '高风险转账报告',
+    overallRiskLevel: 'high',
+    submittedAt: '2026-04-10T10:00:00Z',
+    updatedAt: '2026-04-10T10:00:00Z',
+    closedAt: null,
+  );
+}
+
+ManualReviewDetailData _sampleManualReviewDetail() {
+  return const ManualReviewDetailData(
+    reviewId: 'review-001',
+    confirmationToken: 'report-high-001',
+    status: 'submitted',
+    outcome: null,
+    requestReason: '这笔交易的用途说明和关系描述有冲突，需要人工进一步核验。',
+    headline: '高风险转账报告',
+    overallRiskLevel: 'high',
+    submittedAt: '2026-04-10T10:00:00Z',
+    updatedAt: '2026-04-10T10:00:00Z',
+    closedAt: null,
+    inReviewAt: null,
+    reviewNote: null,
+    reviewerId: null,
+    requestSnapshot: ManualReviewSnapshotData(
+      headline: '高风险转账报告',
+      overallRiskLevel: 'high',
+      riskSummary: '该交易涉及高风险语义和外部情报命中。',
+      riskCategory: 'safe_account_scam',
+      policyVersion: 'secondary_policy_v1',
+      generationMode: 'fallback',
+      generatedAt: '2026-04-09T12:00:00Z',
+      evidence: <String>['外部情报命中高风险名单', '用户解释与场景分类冲突'],
+      governance: RiskReportGovernanceData(
+        reportVersion: 'v2',
+        policyVersion: 'secondary_policy_v1',
+        generationMode: 'fallback',
+        sourceStage: 'secondary-check',
+        secondaryDecision: 'block_secondary',
+        riskCategory: 'safe_account_scam',
+        externalIntelligenceLevel: 'medium',
+        traceEvents: <String>['secondary_decided', 'risk_report_generated'],
+      ),
+    ),
+  );
+}
+
+ManualReviewSummaryData _sampleClosedManualReviewSummary() {
+  return const ManualReviewSummaryData(
+    reviewId: 'review-002',
+    confirmationToken: 'report-high-002',
+    status: 'closed',
+    outcome: 'upheld',
+    requestReason: '该复核单已经关闭，用于测试状态筛选。',
+    headline: '已关闭高风险转账报告',
+    overallRiskLevel: 'high',
+    submittedAt: '2026-04-10T09:00:00Z',
+    updatedAt: '2026-04-10T11:00:00Z',
+    closedAt: '2026-04-10T11:00:00Z',
+  );
+}
+
+ManualReviewDetailData _sampleClosedManualReviewDetail() {
+  return const ManualReviewDetailData(
+    reviewId: 'review-002',
+    confirmationToken: 'report-high-002',
+    status: 'closed',
+    outcome: 'upheld',
+    requestReason: '该复核单已经关闭，用于测试状态筛选。',
+    headline: '已关闭高风险转账报告',
+    overallRiskLevel: 'high',
+    submittedAt: '2026-04-10T09:00:00Z',
+    updatedAt: '2026-04-10T11:00:00Z',
+    closedAt: '2026-04-10T11:00:00Z',
+    inReviewAt: '2026-04-10T09:30:00Z',
+    reviewNote: '维持原结论。',
+    reviewerId: 'demo-reviewer',
+    requestSnapshot: ManualReviewSnapshotData(
+      headline: '已关闭高风险转账报告',
+      overallRiskLevel: 'high',
+      riskSummary: '关闭状态的复核样例。',
+      riskCategory: 'safe_account_scam',
+      policyVersion: 'secondary_policy_v1',
+      generationMode: 'fallback',
+      generatedAt: '2026-04-09T11:00:00Z',
+      evidence: <String>['证据 A', '证据 B'],
+      governance: RiskReportGovernanceData(
+        reportVersion: 'v2',
+        policyVersion: 'secondary_policy_v1',
+        generationMode: 'fallback',
+        sourceStage: 'secondary-check',
+        secondaryDecision: 'block_secondary',
+        riskCategory: 'safe_account_scam',
+        externalIntelligenceLevel: 'medium',
+        traceEvents: <String>['secondary_decided', 'risk_report_generated'],
+      ),
+    ),
+  );
+}
+
 class _FakeApiClient implements BankingApiClient {
   _FakeApiClient({
     this.precheckResponse,
+    List<RiskReportListItemData>? highRiskReports,
+    List<ManualReviewSummaryData>? manualReviews,
+    List<ManualReviewQueueItemData>? manualReviewQueue,
+    Map<String, ManualReviewDetailData>? manualReviewDetails,
+    this.highRiskReportsError,
     this.secondaryResponse = const TransferSecondaryCheckResult(
       secondaryDecision: 'pass_secondary',
       reasons: <String>['user explanation looks reasonable'],
@@ -407,8 +770,12 @@ class _FakeApiClient implements BankingApiClient {
         matchedKeywords: <String>[],
         matchedScenarios: <String>['normal_transfer'],
         analysis: 'No high-risk scenario was matched after the explanation.',
-        followUpQuestions: <String>['What is your relationship with the payee?'],
-        suggestedReplyExamples: <String>['This is a normal repayment to a known friend.'],
+        followUpQuestions: <String>[
+          'What is your relationship with the payee?',
+        ],
+        suggestedReplyExamples: <String>[
+          'This is a normal repayment to a known friend.',
+        ],
       ),
       explainPack: ExplainPackData(
         headline: 'Secondary check passed',
@@ -425,7 +792,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'Secondary Decision Basis',
             level: 'low',
             summary: 'The explanation is consistent.',
-            detail: 'The relationship and purpose are coherent and do not include high-risk instructions.',
+            detail:
+                'The relationship and purpose are coherent and do not include high-risk instructions.',
             score: 0.36,
           ),
         ],
@@ -434,9 +802,37 @@ class _FakeApiClient implements BankingApiClient {
     this.secondaryDelay = Duration.zero,
     this.confirmDelay = Duration.zero,
     this.cancelDelay = Duration.zero,
-  });
+  }) : _highRiskReports = List<RiskReportListItemData>.from(
+         highRiskReports ??
+             const <RiskReportListItemData>[
+               RiskReportListItemData(
+                 confirmationToken: 'report-high-001',
+                 headline: '高风险转账报告',
+                 overallRiskLevel: 'high',
+                 riskSummary: '该交易涉及高风险语义和外部情报命中。',
+                 riskCategory: 'safe_account_scam',
+                 policyVersion: 'secondary_policy_v1',
+                 generationMode: 'fallback',
+                 generatedAt: '2026-04-10T09:30:00Z',
+               ),
+             ],
+       ),
+       _manualReviews = List<ManualReviewSummaryData>.from(
+         manualReviews ?? const <ManualReviewSummaryData>[],
+       ),
+       _manualReviewQueue = List<ManualReviewQueueItemData>.from(
+         manualReviewQueue ?? const <ManualReviewQueueItemData>[],
+       ),
+       _manualReviewDetails = Map<String, ManualReviewDetailData>.from(
+         manualReviewDetails ?? <String, ManualReviewDetailData>{},
+       );
 
   final TransferPrecheckResult? precheckResponse;
+  final List<RiskReportListItemData> _highRiskReports;
+  final List<ManualReviewSummaryData> _manualReviews;
+  final List<ManualReviewQueueItemData> _manualReviewQueue;
+  final Map<String, ManualReviewDetailData> _manualReviewDetails;
+  final ApiException? highRiskReportsError;
   final TransferSecondaryCheckResult secondaryResponse;
   final Duration secondaryDelay;
   final Duration confirmDelay;
@@ -445,6 +841,8 @@ class _FakeApiClient implements BankingApiClient {
   int confirmCallCount = 0;
   int secondaryCallCount = 0;
   int cancelCallCount = 0;
+  int createManualReviewCallCount = 0;
+  int updateManualReviewCallCount = 0;
 
   @override
   Future<ChatReply> chat({
@@ -463,7 +861,17 @@ class _FakeApiClient implements BankingApiClient {
   }
 
   @override
-  Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
+  Future<RiskReportListData> fetchHighRiskReports() async {
+    if (highRiskReportsError != null) {
+      throw highRiskReportsError!;
+    }
+    return RiskReportListData(items: _highRiskReports);
+  }
+
+  @override
+  Future<TransferConfirmResult> confirmTransfer(
+    String confirmationToken,
+  ) async {
     confirmCallCount += 1;
     if (confirmDelay > Duration.zero) {
       await Future<void>.delayed(confirmDelay);
@@ -527,7 +935,8 @@ class _FakeApiClient implements BankingApiClient {
       spendingSummary: const <SpendingSummaryItem>[
         SpendingSummaryItem(category: 'food', totalAmount: 86),
       ],
-      demoTip: 'Demo mode is enabled: remote, large and first-time payee patterns trigger checks.',
+      demoTip:
+          'Demo mode is enabled: remote, large and first-time payee patterns trigger checks.',
     );
   }
 
@@ -589,7 +998,8 @@ class _FakeApiClient implements BankingApiClient {
       ),
       explainPack: ExplainPackData(
         headline: 'Secondary confirmation required',
-        recommendedAction: 'Explain the relationship and transfer purpose before continuing.',
+        recommendedAction:
+            'Explain the relationship and transfer purpose before continuing.',
         scoreBreakdown: RiskScoreBreakdownData(
           flagS: 0.62,
           gBehavior: 0.41,
@@ -602,7 +1012,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'Static Risk',
             level: 'medium',
             summary: 'Remote city and new payee.',
-            detail: 'The current city is unusual and the payee has not been seen recently.',
+            detail:
+                'The current city is unusual and the payee has not been seen recently.',
             score: 0.62,
           ),
           ExplainNodeData(
@@ -610,7 +1021,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'Behavior Signal',
             level: 'medium',
             summary: 'Typing pause and page switching were detected.',
-            detail: 'The precheck observed longer input duration and multiple interaction signals.',
+            detail:
+                'The precheck observed longer input duration and multiple interaction signals.',
             score: 0.41,
           ),
           ExplainNodeData(
@@ -618,7 +1030,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'Semantic Risk',
             level: 'medium',
             summary: 'Matched remote large transfer scenario.',
-            detail: 'The transfer context contains remote-city and large-amount cues.',
+            detail:
+                'The transfer context contains remote-city and large-amount cues.',
             score: 0.74,
           ),
           ExplainNodeData(
@@ -626,7 +1039,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'External Intel',
             level: 'medium',
             summary: 'External negative intelligence flagged the payee.',
-            detail: 'Recent complaints suggest abnormal collection behavior and require more checks.',
+            detail:
+                'Recent complaints suggest abnormal collection behavior and require more checks.',
             score: 0.55,
           ),
           ExplainNodeData(
@@ -634,7 +1048,8 @@ class _FakeApiClient implements BankingApiClient {
             title: 'Decision',
             level: 'medium',
             summary: 'Escalate to secondary interrogation.',
-            detail: 'Continue only after the user provides a credible explanation.',
+            detail:
+                'Continue only after the user provides a credible explanation.',
             score: 0.58,
           ),
         ],
@@ -659,13 +1074,201 @@ class _FakeApiClient implements BankingApiClient {
   Future<RiskReportData> fetchRiskReport(String confirmationToken) async {
     return RiskReportData(
       confirmationToken: confirmationToken,
-      headline: '风险报告 · ${confirmationToken.substring(0, 6)}',
-      overallRiskLevel: 'medium',
-      riskSummary: '结合用户画像、文本与分类，当前转账属于中风险示例。',
-      riskFactors: <String>['语义提示：安全账户', '外部情报：名单命中'],
-      recommendedAction: '建议人工核实收款人身份后再决定是否继续。',
-      evidence: <String>['用户解释中提及验证码/安全账户', '分类得分高于阈值'],
+      headline: confirmationToken == 'report-high-001'
+          ? '高风险转账报告'
+          : '风险报告 · ${confirmationToken.substring(0, 6)}',
+      overallRiskLevel: confirmationToken == 'report-high-001'
+          ? 'high'
+          : 'medium',
+      riskSummary: confirmationToken == 'report-high-001'
+          ? '该交易涉及高风险语义、外部情报命中和异常用途说明。'
+          : '结合用户画像、文本与分类，当前转账属于中风险示例。',
+      riskFactors: confirmationToken == 'report-high-001'
+          ? <String>['语义提示：安全账户', '外部情报：名单命中', '二次说明未通过']
+          : <String>['语义提示：安全账户', '外部情报：名单命中'],
+      recommendedAction: '建议人工核实收款人身份后再决定是否继续。重点复核：核实收款人关系与资金用途。',
+      evidence: confirmationToken == 'report-high-001'
+          ? <String>['外部情报命中高风险名单', '用户解释与场景分类冲突']
+          : <String>['用户解释中提及验证码/安全账户', '分类得分高于阈值'],
+      governance: const RiskReportGovernanceData(
+        reportVersion: 'v2',
+        policyVersion: 'secondary_policy_v1',
+        generationMode: 'fallback',
+        sourceStage: 'secondary-check',
+        secondaryDecision: 'pass_secondary',
+        riskCategory: 'normal_transfer',
+        externalIntelligenceLevel: 'medium',
+        traceEvents: <String>['secondary_decided', 'risk_report_generated'],
+      ),
       generatedAt: '2026-04-09T12:00:00Z',
     );
+  }
+
+  @override
+  Future<ManualReviewListData> fetchManualReviews({
+    String status = 'all',
+  }) async {
+    final List<ManualReviewSummaryData> items = status == 'all'
+        ? _manualReviews
+        : _manualReviews
+              .where((ManualReviewSummaryData item) => item.status == status)
+              .toList();
+    return ManualReviewListData(
+      items: List<ManualReviewSummaryData>.from(items),
+    );
+  }
+
+  @override
+  Future<ManualReviewSummaryData> createManualReview({
+    required String confirmationToken,
+    required ManualReviewCreateRequestData request,
+  }) async {
+    createManualReviewCallCount += 1;
+    final String reviewId =
+        'review-${createManualReviewCallCount.toString().padLeft(3, '0')}';
+    final RiskReportData report = await fetchRiskReport(confirmationToken);
+    final ManualReviewSummaryData summary = ManualReviewSummaryData(
+      reviewId: reviewId,
+      confirmationToken: confirmationToken,
+      status: 'submitted',
+      outcome: null,
+      requestReason: request.requestReason,
+      headline: report.headline,
+      overallRiskLevel: report.overallRiskLevel,
+      submittedAt: '2026-04-10T10:00:00Z',
+      updatedAt: '2026-04-10T10:00:00Z',
+      closedAt: null,
+    );
+    _manualReviews.insert(0, summary);
+    _manualReviewQueue.insert(
+      0,
+      ManualReviewQueueItemData(
+        reviewId: reviewId,
+        confirmationToken: confirmationToken,
+        userId: '小a',
+        status: 'submitted',
+        outcome: null,
+        requestReason: request.requestReason,
+        headline: report.headline,
+        overallRiskLevel: report.overallRiskLevel,
+        submittedAt: summary.submittedAt,
+        updatedAt: summary.updatedAt,
+        closedAt: null,
+      ),
+    );
+    _manualReviewDetails[reviewId] = ManualReviewDetailData(
+      reviewId: reviewId,
+      confirmationToken: confirmationToken,
+      status: 'submitted',
+      outcome: null,
+      requestReason: request.requestReason,
+      headline: report.headline,
+      overallRiskLevel: report.overallRiskLevel,
+      submittedAt: summary.submittedAt,
+      updatedAt: summary.updatedAt,
+      closedAt: null,
+      inReviewAt: null,
+      reviewNote: null,
+      reviewerId: null,
+      requestSnapshot: ManualReviewSnapshotData(
+        headline: report.headline,
+        overallRiskLevel: report.overallRiskLevel,
+        riskSummary: report.riskSummary,
+        riskCategory: report.governance.riskCategory,
+        policyVersion: report.governance.policyVersion,
+        generationMode: report.governance.generationMode,
+        generatedAt: report.generatedAt,
+        evidence: report.evidence,
+        governance: report.governance,
+      ),
+    );
+    return summary;
+  }
+
+  @override
+  Future<ManualReviewDetailData> fetchManualReviewDetail(
+    String reviewId,
+  ) async {
+    return _manualReviewDetails[reviewId] ??
+        (throw const ApiException('未找到对应复核单'));
+  }
+
+  @override
+  Future<ManualReviewQueueData> fetchManualReviewQueue() async {
+    return ManualReviewQueueData(
+      items: List<ManualReviewQueueItemData>.from(_manualReviewQueue),
+    );
+  }
+
+  @override
+  Future<ManualReviewDetailData> updateManualReview({
+    required String reviewId,
+    required ManualReviewUpdateRequestData request,
+  }) async {
+    updateManualReviewCallCount += 1;
+    final ManualReviewDetailData current =
+        _manualReviewDetails[reviewId] ??
+        (throw const ApiException('未找到对应复核单'));
+    final ManualReviewDetailData updated = ManualReviewDetailData(
+      reviewId: current.reviewId,
+      confirmationToken: current.confirmationToken,
+      status: request.status,
+      outcome: request.outcome ?? current.outcome,
+      requestReason: current.requestReason,
+      headline: current.headline,
+      overallRiskLevel: current.overallRiskLevel,
+      submittedAt: current.submittedAt,
+      updatedAt: '2026-04-10T11:00:00Z',
+      closedAt: request.status == 'closed' ? '2026-04-10T11:00:00Z' : null,
+      inReviewAt: request.status == 'in_review'
+          ? '2026-04-10T10:30:00Z'
+          : current.inReviewAt,
+      reviewNote: request.reviewNote ?? current.reviewNote,
+      reviewerId: request.reviewerId ?? current.reviewerId,
+      requestSnapshot: current.requestSnapshot,
+    );
+    _manualReviewDetails[reviewId] = updated;
+    final int summaryIndex = _manualReviews.indexWhere(
+      (ManualReviewSummaryData item) => item.reviewId == reviewId,
+    );
+    if (summaryIndex >= 0) {
+      _manualReviews[summaryIndex] = ManualReviewSummaryData(
+        reviewId: updated.reviewId,
+        confirmationToken: updated.confirmationToken,
+        status: updated.status,
+        outcome: updated.outcome,
+        requestReason: updated.requestReason,
+        headline: updated.headline,
+        overallRiskLevel: updated.overallRiskLevel,
+        submittedAt: updated.submittedAt,
+        updatedAt: updated.updatedAt,
+        closedAt: updated.closedAt,
+      );
+    }
+    final int queueIndex = _manualReviewQueue.indexWhere(
+      (ManualReviewQueueItemData item) => item.reviewId == reviewId,
+    );
+    if (request.status == 'closed') {
+      if (queueIndex >= 0) {
+        _manualReviewQueue.removeAt(queueIndex);
+      }
+    } else if (queueIndex >= 0) {
+      final ManualReviewQueueItemData currentQueue =
+          _manualReviewQueue[queueIndex];
+      _manualReviewQueue[queueIndex] = ManualReviewQueueItemData(
+        reviewId: currentQueue.reviewId,
+        confirmationToken: currentQueue.confirmationToken,
+        userId: currentQueue.userId,
+        status: request.status,
+        outcome: updated.outcome,
+        requestReason: currentQueue.requestReason,
+        headline: currentQueue.headline,
+        overallRiskLevel: currentQueue.overallRiskLevel,
+        submittedAt: currentQueue.submittedAt,
+        updatedAt: updated.updatedAt,
+        closedAt: updated.closedAt,
+      );
+    }
+    return updated;
   }
 }

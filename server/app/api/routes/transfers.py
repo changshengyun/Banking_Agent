@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 
+from ...schemas.manual_review import ManualReviewCreateRequest
+from ...schemas.manual_review import ManualReviewSummaryPayload
 from ...schemas.risk import RiskClassificationPayload
+from ...schemas.report import RiskReportListResponsePayload
 from ...schemas.report import RiskReportPayload
 from ...schemas.transfer import (
     TransferCancelRequest,
@@ -57,11 +59,30 @@ def secondary_check_transfer(
 
 
 @router.get(
+    "/transfers/risk-reports",
+    response_model=RiskReportListResponsePayload,
+)
+def list_high_risk_reports() -> RiskReportListResponsePayload:
+    return get_bank_host_service().list_high_risk_reports(limit=20)
+
+
+@router.get(
     "/transfers/{confirmation_token}/risk-report",
     response_model=RiskReportPayload,
 )
 def get_transfer_risk_report(confirmation_token: str) -> RiskReportPayload:
-    try:
-        return get_bank_host_service().get_transfer_risk_report(confirmation_token)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+    return get_bank_host_service().get_transfer_risk_report(confirmation_token)
+
+
+@router.post(
+    "/transfers/{confirmation_token}/manual-review",
+    response_model=ManualReviewSummaryPayload,
+)
+def create_manual_review(
+    confirmation_token: str,
+    payload: ManualReviewCreateRequest,
+) -> ManualReviewSummaryPayload:
+    return get_bank_host_service().create_manual_review(
+        confirmation_token=confirmation_token,
+        payload=payload,
+    )

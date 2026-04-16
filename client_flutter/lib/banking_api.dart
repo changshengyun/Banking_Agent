@@ -35,15 +35,25 @@ abstract class BankingApiClient {
     required List<ChatTurn> messages,
     required ClientContextData context,
   });
+  Future<RiskReportListData> fetchHighRiskReports();
   Future<RiskReportData> fetchRiskReport(String confirmationToken);
+  Future<ManualReviewListData> fetchManualReviews({String status = 'all'});
+  Future<ManualReviewSummaryData> createManualReview({
+    required String confirmationToken,
+    required ManualReviewCreateRequestData request,
+  });
+  Future<ManualReviewDetailData> fetchManualReviewDetail(String reviewId);
+  Future<ManualReviewQueueData> fetchManualReviewQueue();
+  Future<ManualReviewDetailData> updateManualReview({
+    required String reviewId,
+    required ManualReviewUpdateRequestData request,
+  });
 }
 
 class HttpBankingApiClient implements BankingApiClient {
-  HttpBankingApiClient({
-    http.Client? client,
-    String? baseUrl,
-  }) : _client = client ?? http.Client(),
-       _baseUrl = baseUrl ?? defaultApiBaseUrl();
+  HttpBankingApiClient({http.Client? client, String? baseUrl})
+    : _client = client ?? http.Client(),
+      _baseUrl = baseUrl ?? defaultApiBaseUrl();
 
   final http.Client _client;
   final String _baseUrl;
@@ -81,7 +91,9 @@ class HttpBankingApiClient implements BankingApiClient {
   }
 
   @override
-  Future<TransferConfirmResult> confirmTransfer(String confirmationToken) async {
+  Future<TransferConfirmResult> confirmTransfer(
+    String confirmationToken,
+  ) async {
     final response = await _client.post(
       Uri.parse('$_baseUrl/api/v1/transfers/confirm'),
       headers: const <String, String>{'Content-Type': 'application/json'},
@@ -131,11 +143,22 @@ class HttpBankingApiClient implements BankingApiClient {
       Uri.parse('$_baseUrl/api/v1/agent/chat'),
       headers: const <String, String>{'Content-Type': 'application/json'},
       body: jsonEncode(<String, dynamic>{
-        'messages': messages.map((ChatTurn message) => message.toJson()).toList(),
+        'messages': messages
+            .map((ChatTurn message) => message.toJson())
+            .toList(),
         'context': context.toJson(),
       }),
     );
     return ChatReply.fromJson(_decode(response));
+  }
+
+  @override
+  Future<RiskReportListData> fetchHighRiskReports() async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/api/v1/transfers/risk-reports'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+    );
+    return RiskReportListData.fromJson(_decode(response));
   }
 
   @override
@@ -145,6 +168,63 @@ class HttpBankingApiClient implements BankingApiClient {
       headers: const <String, String>{'Content-Type': 'application/json'},
     );
     return RiskReportData.fromJson(_decode(response));
+  }
+
+  @override
+  Future<ManualReviewListData> fetchManualReviews({
+    String status = 'all',
+  }) async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/api/v1/manual-reviews?status=$status'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+    );
+    return ManualReviewListData.fromJson(_decode(response));
+  }
+
+  @override
+  Future<ManualReviewSummaryData> createManualReview({
+    required String confirmationToken,
+    required ManualReviewCreateRequestData request,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$_baseUrl/api/v1/transfers/$confirmationToken/manual-review'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+      body: jsonEncode(request.toJson()),
+    );
+    return ManualReviewSummaryData.fromJson(_decode(response));
+  }
+
+  @override
+  Future<ManualReviewDetailData> fetchManualReviewDetail(
+    String reviewId,
+  ) async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/api/v1/manual-reviews/$reviewId'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+    );
+    return ManualReviewDetailData.fromJson(_decode(response));
+  }
+
+  @override
+  Future<ManualReviewQueueData> fetchManualReviewQueue() async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/api/v1/manual-reviews/queue'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+    );
+    return ManualReviewQueueData.fromJson(_decode(response));
+  }
+
+  @override
+  Future<ManualReviewDetailData> updateManualReview({
+    required String reviewId,
+    required ManualReviewUpdateRequestData request,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$_baseUrl/api/v1/manual-reviews/$reviewId'),
+      headers: const <String, String>{'Content-Type': 'application/json'},
+      body: jsonEncode(request.toJson()),
+    );
+    return ManualReviewDetailData.fromJson(_decode(response));
   }
 
   Map<String, dynamic> _decode(http.Response response) {
@@ -187,18 +267,20 @@ class DashboardData {
       wealthBalance: (json['wealth_balance'] as num?)?.toDouble() ?? 0,
       totalAssets: (json['total_assets'] as num?)?.toDouble() ?? 0,
       currency: json['currency'] as String? ?? 'CNY',
-      recentTransactions: (json['recent_transactions'] as List<dynamic>? ?? <dynamic>[])
-          .map(
-            (dynamic item) =>
-                TransactionRecord.fromJson(item as Map<String, dynamic>),
-          )
-          .toList(),
-      spendingSummary: (json['spending_summary'] as List<dynamic>? ?? <dynamic>[])
-          .map(
-            (dynamic item) =>
-                SpendingSummaryItem.fromJson(item as Map<String, dynamic>),
-          )
-          .toList(),
+      recentTransactions:
+          (json['recent_transactions'] as List<dynamic>? ?? <dynamic>[])
+              .map(
+                (dynamic item) =>
+                    TransactionRecord.fromJson(item as Map<String, dynamic>),
+              )
+              .toList(),
+      spendingSummary:
+          (json['spending_summary'] as List<dynamic>? ?? <dynamic>[])
+              .map(
+                (dynamic item) =>
+                    SpendingSummaryItem.fromJson(item as Map<String, dynamic>),
+              )
+              .toList(),
       demoTip: json['demo_tip'] as String? ?? '',
     );
   }
@@ -214,10 +296,7 @@ class DashboardData {
 }
 
 class TransactionsData {
-  const TransactionsData({
-    required this.items,
-    required this.spendingSummary,
-  });
+  const TransactionsData({required this.items, required this.spendingSummary});
 
   factory TransactionsData.fromJson(Map<String, dynamic> json) {
     return TransactionsData(
@@ -227,12 +306,13 @@ class TransactionsData {
                 TransactionRecord.fromJson(item as Map<String, dynamic>),
           )
           .toList(),
-      spendingSummary: (json['spending_summary'] as List<dynamic>? ?? <dynamic>[])
-          .map(
-            (dynamic item) =>
-                SpendingSummaryItem.fromJson(item as Map<String, dynamic>),
-          )
-          .toList(),
+      spendingSummary:
+          (json['spending_summary'] as List<dynamic>? ?? <dynamic>[])
+              .map(
+                (dynamic item) =>
+                    SpendingSummaryItem.fromJson(item as Map<String, dynamic>),
+              )
+              .toList(),
     );
   }
 
@@ -358,16 +438,19 @@ class TransferPrecheckResult {
   });
 
   factory TransferPrecheckResult.fromJson(Map<String, dynamic> json) {
-    final RiskClassificationData classification = RiskClassificationData.fromJson(
-      json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
-    );
+    final RiskClassificationData classification =
+        RiskClassificationData.fromJson(
+          json['risk_classification'] as Map<String, dynamic>? ??
+              <String, dynamic>{},
+        );
     final double flagS = (json['flag_s'] as num?)?.toDouble() ?? 0;
     final double gBehavior = (json['g_behavior'] as num?)?.toDouble() ?? 0;
     final double gDynamic = (json['g_dynamic'] as num?)?.toDouble() ?? 0;
     final double finalRisk = (json['final_risk'] as num?)?.toDouble() ?? 0;
-    final List<String> reasons = (json['reasons'] as List<dynamic>? ?? <dynamic>[])
-        .map((dynamic item) => item.toString())
-        .toList();
+    final List<String> reasons =
+        (json['reasons'] as List<dynamic>? ?? <dynamic>[])
+            .map((dynamic item) => item.toString())
+            .toList();
 
     final Map<String, dynamic>? explainPackJson =
         json['explain_pack'] as Map<String, dynamic>?;
@@ -432,7 +515,8 @@ class TransferConfirmResult {
       wealthBalance: (json['wealth_balance'] as num?)?.toDouble() ?? 0,
       totalAssets: (json['total_assets'] as num?)?.toDouble() ?? 0,
       latestTransaction: TransactionRecord.fromJson(
-        json['latest_transaction'] as Map<String, dynamic>? ?? <String, dynamic>{},
+        json['latest_transaction'] as Map<String, dynamic>? ??
+            <String, dynamic>{},
       ),
     );
   }
@@ -479,12 +563,15 @@ class TransferSecondaryCheckResult {
   });
 
   factory TransferSecondaryCheckResult.fromJson(Map<String, dynamic> json) {
-    final RiskClassificationData classification = RiskClassificationData.fromJson(
-      json['risk_classification'] as Map<String, dynamic>? ?? <String, dynamic>{},
-    );
-    final List<String> reasons = (json['reasons'] as List<dynamic>? ?? <dynamic>[])
-        .map((dynamic item) => item.toString())
-        .toList();
+    final RiskClassificationData classification =
+        RiskClassificationData.fromJson(
+          json['risk_classification'] as Map<String, dynamic>? ??
+              <String, dynamic>{},
+        );
+    final List<String> reasons =
+        (json['reasons'] as List<dynamic>? ?? <dynamic>[])
+            .map((dynamic item) => item.toString())
+            .toList();
     final double finalRiskAfterSecondary =
         (json['final_risk_after_secondary'] as num?)?.toDouble() ?? 1.0;
     final Map<String, dynamic>? explainPackJson =
@@ -500,7 +587,8 @@ class TransferSecondaryCheckResult {
           );
 
     return TransferSecondaryCheckResult(
-      secondaryDecision: json['secondary_decision'] as String? ?? 'block_secondary',
+      secondaryDecision:
+          json['secondary_decision'] as String? ?? 'block_secondary',
       reasons: reasons,
       finalRiskAfterSecondary: finalRiskAfterSecondary,
       assistantMessage: json['assistant_message'] as String? ?? '',
@@ -534,9 +622,10 @@ class RiskClassificationData {
       riskCategory: json['risk_category'] as String? ?? '正常转账',
       riskLevel: json['risk_level'] as String? ?? 'low',
       blockHint: json['block_hint'] as bool? ?? false,
-      matchedKeywords: (json['matched_keywords'] as List<dynamic>? ?? <dynamic>[])
-          .map((dynamic item) => item.toString())
-          .toList(),
+      matchedKeywords:
+          (json['matched_keywords'] as List<dynamic>? ?? <dynamic>[])
+              .map((dynamic item) => item.toString())
+              .toList(),
       matchedScenarios:
           (json['matched_scenarios'] as List<dynamic>? ?? <dynamic>[])
               .map((dynamic item) => item.toString())
@@ -572,10 +661,10 @@ class ExplainPackData {
   });
 
   const ExplainPackData.empty()
-      : headline = '',
-        recommendedAction = '',
-        scoreBreakdown = const RiskScoreBreakdownData.empty(),
-        nodes = const <ExplainNodeData>[];
+    : headline = '',
+      recommendedAction = '',
+      scoreBreakdown = const RiskScoreBreakdownData.empty(),
+      nodes = const <ExplainNodeData>[];
 
   factory ExplainPackData.fromJson(Map<String, dynamic> json) {
     return ExplainPackData(
@@ -585,7 +674,10 @@ class ExplainPackData {
         json['score_breakdown'] as Map<String, dynamic>? ?? <String, dynamic>{},
       ),
       nodes: (json['nodes'] as List<dynamic>? ?? <dynamic>[])
-          .map((dynamic item) => ExplainNodeData.fromJson(item as Map<String, dynamic>))
+          .map(
+            (dynamic item) =>
+                ExplainNodeData.fromJson(item as Map<String, dynamic>),
+          )
           .toList(),
     );
   }
@@ -649,24 +741,21 @@ class ExplainPackData {
   }) {
     final bool blocked = secondaryDecision == 'block_secondary';
     final bool needsStop = secondaryDecision == 'interrogate';
-    final String level =
-        blocked
-            ? 'high'
-            : needsStop
-            ? 'medium'
-            : riskClassification.riskLevel;
-    final String headline =
-        blocked
-            ? '二次校验未通过'
-            : needsStop
-            ? '二次说明未通过'
-            : '二次校验通过';
-    final String recommendedAction =
-        blocked
-            ? '建议停止转账并联系银行客服进一步核验。'
-            : needsStop
-            ? '当前转账不得继续确认，请关闭或取消交易。'
-            : '可以继续执行转账确认。';
+    final String level = blocked
+        ? 'high'
+        : needsStop
+        ? 'medium'
+        : riskClassification.riskLevel;
+    final String headline = blocked
+        ? '二次校验未通过'
+        : needsStop
+        ? '二次说明未通过'
+        : '二次校验通过';
+    final String recommendedAction = blocked
+        ? '建议停止转账并联系银行客服进一步核验。'
+        : needsStop
+        ? '当前转账不得继续确认，请关闭或取消交易。'
+        : '可以继续执行转账确认。';
     return ExplainPackData(
       headline: headline,
       recommendedAction: recommendedAction,
@@ -720,10 +809,10 @@ class RiskScoreBreakdownData {
   });
 
   const RiskScoreBreakdownData.empty()
-      : flagS = 0,
-        gBehavior = 0,
-        gDynamic = 0,
-        finalRisk = 0;
+    : flagS = 0,
+      gBehavior = 0,
+      gDynamic = 0,
+      finalRisk = 0;
 
   factory RiskScoreBreakdownData.fromJson(Map<String, dynamic> json) {
     return RiskScoreBreakdownData(
@@ -778,6 +867,7 @@ class RiskReportData {
     required this.riskFactors,
     required this.recommendedAction,
     required this.evidence,
+    required this.governance,
     required this.generatedAt,
   });
 
@@ -794,6 +884,9 @@ class RiskReportData {
       evidence: (json['evidence'] as List<dynamic>? ?? <dynamic>[])
           .map((dynamic item) => item.toString())
           .toList(),
+      governance: RiskReportGovernanceData.fromJson(
+        json['governance'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
       generatedAt: json['generated_at'] as String? ?? '',
     );
   }
@@ -805,20 +898,356 @@ class RiskReportData {
   final List<String> riskFactors;
   final String recommendedAction;
   final List<String> evidence;
+  final RiskReportGovernanceData governance;
   final String generatedAt;
 }
 
-class ChatTurn {
-  const ChatTurn({
-    required this.role,
-    required this.content,
+class RiskReportListData {
+  const RiskReportListData({required this.items});
+
+  factory RiskReportListData.fromJson(Map<String, dynamic> json) {
+    return RiskReportListData(
+      items: (json['items'] as List<dynamic>? ?? <dynamic>[])
+          .map(
+            (dynamic item) =>
+                RiskReportListItemData.fromJson(item as Map<String, dynamic>),
+          )
+          .toList(),
+    );
+  }
+
+  final List<RiskReportListItemData> items;
+}
+
+class RiskReportListItemData {
+  const RiskReportListItemData({
+    required this.confirmationToken,
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.riskSummary,
+    required this.riskCategory,
+    required this.policyVersion,
+    required this.generationMode,
+    required this.generatedAt,
+  });
+
+  factory RiskReportListItemData.fromJson(Map<String, dynamic> json) {
+    return RiskReportListItemData(
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? '',
+      riskSummary: json['risk_summary'] as String? ?? '',
+      riskCategory: json['risk_category'] as String? ?? '',
+      policyVersion: json['policy_version'] as String? ?? '',
+      generationMode: json['generation_mode'] as String? ?? '',
+      generatedAt: json['generated_at'] as String? ?? '',
+    );
+  }
+
+  final String confirmationToken;
+  final String headline;
+  final String overallRiskLevel;
+  final String riskSummary;
+  final String riskCategory;
+  final String policyVersion;
+  final String generationMode;
+  final String generatedAt;
+}
+
+class RiskReportGovernanceData {
+  const RiskReportGovernanceData({
+    required this.reportVersion,
+    required this.policyVersion,
+    required this.generationMode,
+    required this.sourceStage,
+    required this.secondaryDecision,
+    required this.riskCategory,
+    required this.externalIntelligenceLevel,
+    required this.traceEvents,
+  });
+
+  factory RiskReportGovernanceData.fromJson(Map<String, dynamic> json) {
+    return RiskReportGovernanceData(
+      reportVersion: json['report_version'] as String? ?? '',
+      policyVersion: json['policy_version'] as String? ?? '',
+      generationMode: json['generation_mode'] as String? ?? '',
+      sourceStage: json['source_stage'] as String? ?? '',
+      secondaryDecision: json['secondary_decision'] as String? ?? '',
+      riskCategory: json['risk_category'] as String? ?? '',
+      externalIntelligenceLevel:
+          json['external_intelligence_level'] as String? ?? '',
+      traceEvents: (json['trace_events'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+    );
+  }
+
+  final String reportVersion;
+  final String policyVersion;
+  final String generationMode;
+  final String sourceStage;
+  final String secondaryDecision;
+  final String riskCategory;
+  final String externalIntelligenceLevel;
+  final List<String> traceEvents;
+}
+
+class ManualReviewCreateRequestData {
+  const ManualReviewCreateRequestData({required this.requestReason});
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{'request_reason': requestReason};
+  }
+
+  final String requestReason;
+}
+
+class ManualReviewUpdateRequestData {
+  const ManualReviewUpdateRequestData({
+    required this.status,
+    this.outcome,
+    this.reviewNote,
+    this.reviewerId,
   });
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
-      'role': role,
-      'content': content,
+      'status': status,
+      if (outcome != null) 'outcome': outcome,
+      if (reviewNote != null) 'review_note': reviewNote,
+      if (reviewerId != null) 'reviewer_id': reviewerId,
     };
+  }
+
+  final String status;
+  final String? outcome;
+  final String? reviewNote;
+  final String? reviewerId;
+}
+
+class ManualReviewListData {
+  const ManualReviewListData({required this.items});
+
+  factory ManualReviewListData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewListData(
+      items: (json['items'] as List<dynamic>? ?? <dynamic>[])
+          .map(
+            (dynamic item) =>
+                ManualReviewSummaryData.fromJson(item as Map<String, dynamic>),
+          )
+          .toList(),
+    );
+  }
+
+  final List<ManualReviewSummaryData> items;
+}
+
+class ManualReviewQueueData {
+  const ManualReviewQueueData({required this.items});
+
+  factory ManualReviewQueueData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewQueueData(
+      items: (json['items'] as List<dynamic>? ?? <dynamic>[])
+          .map(
+            (dynamic item) => ManualReviewQueueItemData.fromJson(
+              item as Map<String, dynamic>,
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  final List<ManualReviewQueueItemData> items;
+}
+
+class ManualReviewSummaryData {
+  const ManualReviewSummaryData({
+    required this.reviewId,
+    required this.confirmationToken,
+    required this.status,
+    required this.outcome,
+    required this.requestReason,
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.submittedAt,
+    required this.updatedAt,
+    required this.closedAt,
+  });
+
+  factory ManualReviewSummaryData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewSummaryData(
+      reviewId: json['review_id'] as String? ?? '',
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      status: json['status'] as String? ?? 'submitted',
+      outcome: json['outcome'] as String?,
+      requestReason: json['request_reason'] as String? ?? '',
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? 'high',
+      submittedAt: json['submitted_at'] as String? ?? '',
+      updatedAt: json['updated_at'] as String? ?? '',
+      closedAt: json['closed_at'] as String?,
+    );
+  }
+
+  final String reviewId;
+  final String confirmationToken;
+  final String status;
+  final String? outcome;
+  final String requestReason;
+  final String headline;
+  final String overallRiskLevel;
+  final String submittedAt;
+  final String updatedAt;
+  final String? closedAt;
+}
+
+class ManualReviewQueueItemData {
+  const ManualReviewQueueItemData({
+    required this.reviewId,
+    required this.confirmationToken,
+    required this.userId,
+    required this.status,
+    required this.outcome,
+    required this.requestReason,
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.submittedAt,
+    required this.updatedAt,
+    required this.closedAt,
+  });
+
+  factory ManualReviewQueueItemData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewQueueItemData(
+      reviewId: json['review_id'] as String? ?? '',
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      userId: json['user_id'] as String? ?? '',
+      status: json['status'] as String? ?? 'submitted',
+      outcome: json['outcome'] as String?,
+      requestReason: json['request_reason'] as String? ?? '',
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? 'high',
+      submittedAt: json['submitted_at'] as String? ?? '',
+      updatedAt: json['updated_at'] as String? ?? '',
+      closedAt: json['closed_at'] as String?,
+    );
+  }
+
+  final String reviewId;
+  final String confirmationToken;
+  final String userId;
+  final String status;
+  final String? outcome;
+  final String requestReason;
+  final String headline;
+  final String overallRiskLevel;
+  final String submittedAt;
+  final String updatedAt;
+  final String? closedAt;
+}
+
+class ManualReviewDetailData {
+  const ManualReviewDetailData({
+    required this.reviewId,
+    required this.confirmationToken,
+    required this.status,
+    required this.outcome,
+    required this.requestReason,
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.submittedAt,
+    required this.updatedAt,
+    required this.closedAt,
+    required this.inReviewAt,
+    required this.reviewNote,
+    required this.reviewerId,
+    required this.requestSnapshot,
+  });
+
+  factory ManualReviewDetailData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewDetailData(
+      reviewId: json['review_id'] as String? ?? '',
+      confirmationToken: json['confirmation_token'] as String? ?? '',
+      status: json['status'] as String? ?? 'submitted',
+      outcome: json['outcome'] as String?,
+      requestReason: json['request_reason'] as String? ?? '',
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? 'high',
+      submittedAt: json['submitted_at'] as String? ?? '',
+      updatedAt: json['updated_at'] as String? ?? '',
+      closedAt: json['closed_at'] as String?,
+      inReviewAt: json['in_review_at'] as String?,
+      reviewNote: json['review_note'] as String?,
+      reviewerId: json['reviewer_id'] as String?,
+      requestSnapshot: ManualReviewSnapshotData.fromJson(
+        json['request_snapshot'] as Map<String, dynamic>? ??
+            <String, dynamic>{},
+      ),
+    );
+  }
+
+  final String reviewId;
+  final String confirmationToken;
+  final String status;
+  final String? outcome;
+  final String requestReason;
+  final String headline;
+  final String overallRiskLevel;
+  final String submittedAt;
+  final String updatedAt;
+  final String? closedAt;
+  final String? inReviewAt;
+  final String? reviewNote;
+  final String? reviewerId;
+  final ManualReviewSnapshotData requestSnapshot;
+}
+
+class ManualReviewSnapshotData {
+  const ManualReviewSnapshotData({
+    required this.headline,
+    required this.overallRiskLevel,
+    required this.riskSummary,
+    required this.riskCategory,
+    required this.policyVersion,
+    required this.generationMode,
+    required this.generatedAt,
+    required this.evidence,
+    required this.governance,
+  });
+
+  factory ManualReviewSnapshotData.fromJson(Map<String, dynamic> json) {
+    return ManualReviewSnapshotData(
+      headline: json['headline'] as String? ?? '',
+      overallRiskLevel: json['overall_risk_level'] as String? ?? 'high',
+      riskSummary: json['risk_summary'] as String? ?? '',
+      riskCategory: json['risk_category'] as String? ?? '',
+      policyVersion: json['policy_version'] as String? ?? '',
+      generationMode: json['generation_mode'] as String? ?? '',
+      generatedAt: json['generated_at'] as String? ?? '',
+      evidence: (json['evidence'] as List<dynamic>? ?? <dynamic>[])
+          .map((dynamic item) => item.toString())
+          .toList(),
+      governance: RiskReportGovernanceData.fromJson(
+        json['governance'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
+    );
+  }
+
+  final String headline;
+  final String overallRiskLevel;
+  final String riskSummary;
+  final String riskCategory;
+  final String policyVersion;
+  final String generationMode;
+  final String generatedAt;
+  final List<String> evidence;
+  final RiskReportGovernanceData governance;
+}
+
+class ChatTurn {
+  const ChatTurn({required this.role, required this.content});
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{'role': role, 'content': content};
   }
 
   final String role;
@@ -837,15 +1266,17 @@ class ChatReply {
       assistantMessage: json['assistant_message'] as String? ?? '',
       usedTools: (json['used_tools'] as List<dynamic>? ?? <dynamic>[])
           .map(
-            (dynamic item) => ToolUsageItem.fromJson(item as Map<String, dynamic>),
-          )
-          .toList(),
-      suggestedActions: (json['suggested_actions'] as List<dynamic>? ?? <dynamic>[])
-          .map(
             (dynamic item) =>
-                SuggestedActionItem.fromJson(item as Map<String, dynamic>),
+                ToolUsageItem.fromJson(item as Map<String, dynamic>),
           )
           .toList(),
+      suggestedActions:
+          (json['suggested_actions'] as List<dynamic>? ?? <dynamic>[])
+              .map(
+                (dynamic item) =>
+                    SuggestedActionItem.fromJson(item as Map<String, dynamic>),
+              )
+              .toList(),
     );
   }
 
@@ -855,10 +1286,7 @@ class ChatReply {
 }
 
 class ToolUsageItem {
-  const ToolUsageItem({
-    required this.name,
-    required this.summary,
-  });
+  const ToolUsageItem({required this.name, required this.summary});
 
   factory ToolUsageItem.fromJson(Map<String, dynamic> json) {
     return ToolUsageItem(
@@ -872,10 +1300,7 @@ class ToolUsageItem {
 }
 
 class SuggestedActionItem {
-  const SuggestedActionItem({
-    required this.label,
-    required this.action,
-  });
+  const SuggestedActionItem({required this.label, required this.action});
 
   factory SuggestedActionItem.fromJson(Map<String, dynamic> json) {
     return SuggestedActionItem(

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .api.router import api_router
 from .config import settings
 from .db import init_database
+from .errors import NotFoundError
 from .mcp_runtime import mount_mcp_servers
 from .seed import seed_demo_data
 from .services.embedding_service import get_embedding_service
@@ -46,6 +47,14 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+
+@app.exception_handler(NotFoundError)
+async def not_found_error_handler(_: Request, error: NotFoundError) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={"detail": str(error)},
+    )
 
 
 @app.exception_handler(ValueError)

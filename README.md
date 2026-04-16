@@ -1,19 +1,23 @@
 # Banking AI Demo Monorepo
 
 基于 `Flutter + FastAPI + MCP + SQLite + OpenAI-compatible LLM` 的手机银行风控演示项目。  
-当前活动阶段为 `V5 / Phase-1（启动准备中）`。`V4` 已于 2026-04-09 完成收口，完成范围为：
+当前活动阶段为 `V5 / Phase-3（进行中）`。`V4` 已于 2026-04-09 完成收口，完成范围为：
 - `Track-A`：感知层能力建设
 - `Track-B`：初版风险报告 Agent
 
-## 当前状态（2026-04-09）
+## 当前状态（2026-04-10）
 
 - `V4` 已完成“感知层 + 初版风险报告 Agent”双主线交付。
 - 原 `V5` 的“初版风险报告 Agent”已前置并入 `V4`。
 - 原 `V3` 性能优化线已冻结，当前仅保留性能观测，不作为版本完成阻塞项。
 - 后端已完成风险报告生成、持久化、查询与 trace 审计接入。
 - Flutter 已补齐二次校验后的风险报告查看入口。
+- `V5` 当前已增强风险报告治理上下文与复核字段。
+- `V5` 当前已新增“我的页风险报告中心”，首版仅展示高风险报告。
+- `V5` 当前已新增人工复核完整闭环：用户发起、我的页查看、App 内处理台接单与关闭。
+- `V5` 当前已新增人工复核状态筛选与时间线追踪，并已开始修正为真实的提交/处理/关闭三时间点展示。
 - 自动化验收已通过：
-  - `server\.venv\Scripts\python -m pytest server\tests -q` -> `58 passed`
+  - `server\.venv\Scripts\python -m pytest server\tests -q` -> `66 passed`
   - `flutter analyze --no-version-check` -> `No issues found!`
   - `flutter test --no-version-check test\widget_test.dart` -> `All tests passed!`
 - 之前的 Flutter 假性阻塞已解决，根因是 Flutter SDK Git 信任异常和命令执行目录错误。
@@ -41,6 +45,10 @@
 - 三类 Agent：领域初分、领域细分、语义分析
 - 感知层快照：`perception_snapshot` 已进入关键 trace
 - 风险报告：`secondary-check` 后生成并可按 `confirmation_token` 查询
+- 风险报告中心：当前用户最近 20 条高风险报告可在“我的”页重复查看
+- 人工复核闭环：高风险报告可申请人工复核，并在 App 内完成演示处理
+- 人工复核筛选与时间线：复核单支持按状态筛选，并能查看提交到关闭的时间线
+- 风险报告治理上下文：报告版本、策略版本、生成模式、来源阶段、风险分类、关联审计事件
 - 审计链路：`trace_events` + MCP 查询
 
 ## 文档导航
@@ -103,6 +111,13 @@ flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
 - `POST /api/v1/transfers/confirm`
 - `POST /api/v1/transfers/cancel`
 - `GET /api/v1/transfers/{confirmation_token}/risk-report`
+- `GET /api/v1/transfers/risk-reports`
+- `POST /api/v1/transfers/{confirmation_token}/manual-review`
+- `GET /api/v1/manual-reviews`
+- `GET /api/v1/manual-reviews?status=...`
+- `GET /api/v1/manual-reviews/{review_id}`
+- `GET /api/v1/manual-reviews/queue`
+- `PATCH /api/v1/manual-reviews/{review_id}`
 - `POST /api/v1/agent/chat`
 
 ## MCP 工具
@@ -161,13 +176,19 @@ flutter test --no-version-check test\widget_test.dart
 
 ## 当前验证结果（2026-04-09）
 
-- 后端回归：`58 passed`
+- 后端回归：`64 passed`
 - Flutter analyze：`No issues found!`
 - Flutter widget test：`All tests passed!`
 - 风险报告链路：
   - 404 场景已覆盖
   - `secondary-check` 后可生成并查询报告
   - trace 已包含 `risk_report_generated`
+- `V5` 报告增强：
+  - 已输出治理元数据
+  - Flutter 已展示治理上下文
+  - “我的”页已展示高风险报告中心
+  - 人工复核完整闭环已打通
+  - 人工复核状态筛选与时间线已打通
 - 性能：
   - 保留既有基线观测
   - 当前版本不将性能作为完成阻塞项

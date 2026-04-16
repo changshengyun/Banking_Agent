@@ -4,10 +4,22 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import time
 
+from ..errors import NotFoundError
 from ..repositories.banking import BankingRepository
 from ..schemas.common import SpendingCategory, TransactionItem
 from ..schemas.dashboard import DashboardResponse, TransactionsResponse
 from ..schemas.external_intelligence import ExternalIntelligenceReport
+from ..schemas.manual_review import ManualReviewCreateRequest
+from ..schemas.manual_review import ManualReviewDetailPayload
+from ..schemas.manual_review import ManualReviewListResponsePayload
+from ..schemas.manual_review import ManualReviewQueueItemPayload
+from ..schemas.manual_review import ManualReviewQueueResponsePayload
+from ..schemas.manual_review import ManualReviewSnapshotPayload
+from ..schemas.manual_review import ManualReviewSummaryPayload
+from ..schemas.manual_review import ManualReviewUpdateRequest
+from ..schemas.report import RiskReportListItemPayload
+from ..schemas.report import RiskReportListResponsePayload
+from ..schemas.report import RiskReportGovernancePayload
 from ..schemas.report import RiskReportPayload
 from ..schemas.risk import RiskClassificationPayload
 from ..schemas.transfer import (
@@ -652,6 +664,7 @@ class BankHostService:
             semantic_red_flags=result.semantic_red_flags,
             external_intelligence=external_intelligence,
             explain_pack=explain_pack,
+            policy_version=policy_version,
         )
         self._write_trace_event(
             confirmation_token=request.confirmation_token,
@@ -676,6 +689,7 @@ class BankHostService:
                 ),
                 "risk_report_headline": risk_report.headline,
                 "risk_report_level": risk_report.overall_risk_level,
+                "risk_report_version": risk_report.governance.report_version,
                 "timing_total_ms": self._elapsed_ms(total_started_at),
                 "timing_classification_ms": classification_ms,
                 "timing_external_intelligence_ms": external_intelligence_ms,
@@ -723,8 +737,157 @@ class BankHostService:
     def get_transfer_risk_report(self, confirmation_token: str) -> RiskReportPayload:
         payload = self.repository.get_risk_report(confirmation_token)
         if payload is None:
-            raise ValueError("未找到对应的风险报告。")
+            raise NotFoundError("未找到对应的风险报告。")
         return RiskReportPayload(**payload)
+
+    def list_high_risk_reports(self, limit: int = 20) -> RiskReportListResponsePayload:
+        items = [
+            RiskReportListItemPayload(**item)
+            for item in self.repository.list_high_risk_reports(limit=limit)
+        ]
+        return RiskReportListResponsePayload(items=items)
+
+    def create_manual_review(
+        self,
+        *,
+        confirmation_token: str,
+        payload: ManualReviewCreateRequest,
+    ) -> ManualReviewSummaryPayload:
+        transfer = self.repository.get_transfer_record(confirmation_token)
+        if transfer is None:
+            raise NotFoundError("未找到对应转账记录。")
+        report_payload = self.repository.get_risk_report(confirmation_token)
+        if report_payload is None:
+            raise NotFoundError("该转账尚未生成风险报告，无法申请人工复核。")
+        report = RiskReportPayload(**report_payload)
+        if report.overall_risk_level.lower() != "high":
+            raise ValueError("仅高风险报告支持申请人工复核。")
+        existing = self.repository.get_open_manual_review_by_confirmation_token(
+            confirmation_token
+        )
+        if existing is not None:
+            raise ValueError("该风险报告已有进行中的人工复核单。")
+
+        created = self.repository.create_manual_review_case(
+            review_id=self.repository.build_manual_review_id(),
+            confirmation_token=confirmation_token,
+            request_reason=payload.request_reason.strip(),
+            request_snapshot=self._build_manual_review_snapshot(report).model_dump(),
+        )
+        self._write_trace_event(
+            confirmation_token=confirmation_token,
+            event_type="manual_review_requested",
+            stage="manual-review",
+            decision=transfer.get("secondary_decision") or transfer.get("decision"),
+            risk_level=report.overall_risk_level,
+            final_risk=float(transfer.get("secondary_risk") or transfer.get("final_risk") or 0.0),
+            payload={
+                "review_id": created["review_id"],
+                "status": created["status"],
+                "request_reason": PiiMasker.mask_text(created["request_reason"]),
+            },
+        )
+        return ManualReviewSummaryPayload(**created)
+
+    def list_manual_reviews(
+        self,
+        *,
+        limit: int = 20,
+        status: str = "all",
+    ) -> ManualReviewListResponsePayload:
+        if status not in {"all", "submitted", "in_review", "closed"}:
+            raise ValueError("manual review status 参数无效。")
+        items = [
+            ManualReviewSummaryPayload(**item)
+            for item in self.repository.list_manual_reviews(
+                limit=limit,
+                status=None if status == "all" else status,
+            )
+        ]
+        return ManualReviewListResponsePayload(items=items)
+
+    def get_manual_review(self, review_id: str) -> ManualReviewDetailPayload:
+        payload = self.repository.get_manual_review_case(review_id)
+        if payload is None:
+            raise NotFoundError("未找到对应人工复核单。")
+        return ManualReviewDetailPayload(**payload)
+
+    def list_manual_review_queue(self) -> ManualReviewQueueResponsePayload:
+        items = [
+            ManualReviewQueueItemPayload(**item)
+            for item in self.repository.list_manual_review_queue()
+        ]
+        return ManualReviewQueueResponsePayload(items=items)
+
+    def update_manual_review(
+        self,
+        *,
+        review_id: str,
+        payload: ManualReviewUpdateRequest,
+    ) -> ManualReviewDetailPayload:
+        current = self.repository.get_manual_review_case(review_id)
+        if current is None:
+            raise NotFoundError("未找到对应人工复核单。")
+        if payload.status == "in_review":
+            if current["status"] != "submitted":
+                raise ValueError("当前复核单无法进入处理中状态。")
+            updated = self.repository.update_manual_review_case(
+                review_id=review_id,
+                status="in_review",
+                outcome=None,
+                review_note=current.get("review_note"),
+                reviewer_id=payload.reviewer_id or "demo-reviewer",
+                in_review_at=current.get("in_review_at") or self.repository._now(),
+            )
+            self._write_trace_event(
+                confirmation_token=current["confirmation_token"],
+                event_type="manual_review_started",
+                stage="manual-review",
+                decision=None,
+                risk_level=updated["overall_risk_level"],
+                final_risk=0.0,
+                payload={
+                    "review_id": updated["review_id"],
+                    "status": updated["status"],
+                    "reviewer_id": updated.get("reviewer_id") or "",
+                },
+            )
+            return ManualReviewDetailPayload(**updated)
+
+        if payload.status == "closed":
+            if current["status"] != "in_review":
+                raise ValueError("当前复核单尚未进入处理中状态，无法关闭。")
+            if payload.outcome not in {"upheld", "advisory"}:
+                raise ValueError("关闭复核单时必须提供有效 outcome。")
+            review_note = (payload.review_note or "").strip()
+            if not review_note:
+                raise ValueError("关闭复核单时必须填写 review_note。")
+            updated = self.repository.update_manual_review_case(
+                review_id=review_id,
+                status="closed",
+                outcome=payload.outcome,
+                review_note=review_note,
+                reviewer_id=payload.reviewer_id or current.get("reviewer_id") or "demo-reviewer",
+                in_review_at=current.get("in_review_at"),
+            )
+            self._write_trace_event(
+                confirmation_token=current["confirmation_token"],
+                event_type="manual_review_closed",
+                stage="manual-review",
+                decision=None,
+                risk_level=updated["overall_risk_level"],
+                final_risk=0.0,
+                payload={
+                    "review_id": updated["review_id"],
+                    "status": updated["status"],
+                    "outcome": updated.get("outcome") or "",
+                    "reviewer_id": updated.get("reviewer_id") or "",
+                    "review_note": PiiMasker.mask_text(updated.get("review_note") or ""),
+                },
+            )
+            return ManualReviewDetailPayload(**updated)
+
+        raise ValueError("仅支持将人工复核单更新为 in_review 或 closed。")
 
     # HIRD-H: 感知层，负责筛查收款人的外部情报名单命中。
     def screen_external_intelligence(
@@ -773,6 +936,7 @@ class BankHostService:
         semantic_red_flags: list[str],
         external_intelligence: ExternalIntelligenceReport,
         explain_pack: ExplainPack,
+        policy_version: str,
     ) -> RiskReportPayload:
         generated_at = self.repository._now()
         report = self.risk_report_service.generate_report(
@@ -784,6 +948,7 @@ class BankHostService:
             semantic_red_flags=semantic_red_flags,
             external_intelligence=external_intelligence,
             explain_pack=explain_pack,
+            policy_version=policy_version,
             generated_at=generated_at,
         )
         self.repository.upsert_risk_report(report=report)
@@ -807,9 +972,31 @@ class BankHostService:
             payload={
                 "headline": report.headline,
                 "overall_risk_level": report.overall_risk_level,
+                "report_version": report.governance.report_version,
+                "generation_mode": report.governance.generation_mode,
+                "policy_version": report.governance.policy_version,
                 "risk_factors": report.risk_factors,
                 "generated_at": report.generated_at,
             },
+        )
+
+    def _build_manual_review_snapshot(
+        self,
+        report: RiskReportPayload,
+    ) -> ManualReviewSnapshotPayload:
+        governance = report.governance
+        if not isinstance(governance, RiskReportGovernancePayload):
+            governance = RiskReportGovernancePayload(**governance)
+        return ManualReviewSnapshotPayload(
+            headline=report.headline,
+            overall_risk_level=report.overall_risk_level,
+            risk_summary=report.risk_summary,
+            risk_category=report.governance.risk_category,
+            policy_version=report.governance.policy_version,
+            generation_mode=report.governance.generation_mode,
+            generated_at=report.generated_at,
+            evidence=report.evidence,
+            governance=governance,
         )
 
     def _build_perception_snapshot(

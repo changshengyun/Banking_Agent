@@ -168,7 +168,24 @@ CREATE TABLE IF NOT EXISTS risk_reports (
     risk_factors_json TEXT NOT NULL,
     recommended_action TEXT NOT NULL,
     evidence_json TEXT NOT NULL,
+    governance_json TEXT NOT NULL DEFAULT '{}',
     generated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS manual_review_cases (
+    review_id TEXT PRIMARY KEY,
+    confirmation_token TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL,
+    outcome TEXT,
+    request_reason TEXT NOT NULL,
+    request_snapshot_json TEXT NOT NULL,
+    review_note TEXT,
+    reviewer_id TEXT,
+    in_review_at TEXT,
+    submitted_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
 );
 """
 
@@ -214,6 +231,54 @@ def init_database() -> None:
             "risk_scene_knowledge",
             "vector_json",
             "vector_json TEXT",
+        )
+        _ensure_column(
+            connection,
+            "risk_reports",
+            "governance_json",
+            "governance_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "outcome",
+            "outcome TEXT",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "request_snapshot_json",
+            "request_snapshot_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "review_note",
+            "review_note TEXT",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "reviewer_id",
+            "reviewer_id TEXT",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "in_review_at",
+            "in_review_at TEXT",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "updated_at",
+            "updated_at TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            connection,
+            "manual_review_cases",
+            "closed_at",
+            "closed_at TEXT",
         )
         _ensure_column(
             connection,
